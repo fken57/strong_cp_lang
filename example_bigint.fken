@@ -1,0 +1,16 @@
+// Integers stay in 64 bits while the value fits.
+let max64 = 9223372036854775807;
+print(max64 + 1);
+
+// The same int type can hold factorial(30).
+let factorial = 1;
+let i = 1;
+while (i <= 30) {
+    factorial = factorial * i;
+    i = i + 1;
+}
+print(factorial);
+
+// Huge literals are decimal, including literals with leading zeroes.
+let huge = 10000000000000000000000000000000000000000;
+print(huge * huge);

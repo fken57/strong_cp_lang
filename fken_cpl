@@ -1,0 +1,107 @@
+#!/usr/bin/env python3
+"""Compile .fken to C++20, or compile and run it locally with --run."""
+import argparse
+import hashlib
+import json
+import os
+from pathlib import Path
+import shlex
+import subprocess
+import sys
+import tempfile
+
+ROOT = Path(__file__).resolve().parent
+BUILD = ROOT / ".build"
+SOURCES = (
+    "fken_cpl.c", "typedef.c", "util.c", "lex.c", "parser.c", "analyze.c",
+    "generate_cpp.c", "runtime.hpp",
+)
+
+
+def build_compiler():
+    BUILD.mkdir(exist_ok=True)
+    command = shlex.split(os.environ.get("CC", "cc"))
+    flags = shlex.split(os.environ.get("CFLAGS", ""))
+    digest = hashlib.sha256(json.dumps(command + flags).encode())
+    for name in SOURCES:
+        digest.update((ROOT / name).read_bytes())
+    digest.update(Path(__file__).read_bytes())
+    fingerprint = digest.hexdigest()
+    binary = BUILD / "compiler"
+    stamp = BUILD / "compiler.sha256"
+    if binary.exists() and stamp.exists() and stamp.read_text() == fingerprint:
+        return binary
+    with tempfile.TemporaryDirectory(prefix="compiler-", dir=BUILD) as directory:
+        work = Path(directory)
+        # Embed the runtime so emitted C++ needs no project-local headers.
+        (work / "runtime.inc").write_text("".join(
+            json.dumps(line) + "\n"
+            for line in (ROOT / "runtime.hpp").read_text().splitlines(keepends=True)
+        ))
+        subprocess.run(command + [
+            "-std=c11", "-O2", "-Wall", "-Wextra",
+            "-Wno-unused-parameter", *flags,
+            "-I", str(work), str(ROOT / "fken_cpl.c"),
+            "-o", str(work / "compiler"),
+        ], check=True)
+        os.replace(work / "compiler", binary)
+    stamp.write_text(fingerprint)
+    return binary
+
+
+def boost_flags():
+    paths = []
+    if os.environ.get("FKEN_BOOST_INCLUDE"):
+        paths.append(Path(os.environ["FKEN_BOOST_INCLUDE"]))
+    local = ROOT / ".deps" / "boost" / "usr" / "include"
+    if local.is_dir():
+        paths.append(local)
+    return [flag for path in paths for flag in ("-I", str(path))]
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Compile .fken to C++20. Requires GCC/Clang and Boost headers for --run."
+    )
+    parser.add_argument("source", nargs="?", help="source file, or - for stdin")
+    parser.add_argument("--code", help="source code instead of a file")
+    parser.add_argument("-o", "--output", type=Path, help="write generated C++ to this file")
+    parser.add_argument("--run", action="store_true", help="compile generated C++ and execute locally")
+    parser.add_argument("--version", action="version", version="fken_cpl 0.1.0")
+    args = parser.parse_args()
+    if (args.source is None) == (args.code is None):
+        parser.error("provide one source file or --code")
+    try:
+        compiler = build_compiler()
+        inputs = ["--code", args.code] if args.code is not None else [args.source]
+        result = subprocess.run([str(compiler), *inputs], stdout=subprocess.PIPE)
+        if result.returncode:
+            return result.returncode
+        if args.output:
+            args.output.write_bytes(result.stdout)
+        if not args.run:
+            if not args.output:
+                sys.stdout.buffer.write(result.stdout)
+            return 0
+        with tempfile.TemporaryDirectory(prefix="run-", dir=BUILD) as directory:
+            work = Path(directory)
+            cpp = work / "program.cpp"
+            cpp.write_bytes(result.stdout)
+            cxx = shlex.split(os.environ.get("CXX", "c++"))
+            flags = shlex.split(os.environ.get("CXXFLAGS", ""))
+            result = subprocess.run(cxx + [
+                "-std=c++20", "-O2", *flags, *boost_flags(),
+                str(cpp), "-o", str(work / "program"),
+            ])
+            if result.returncode:
+                return result.returncode
+            return subprocess.run([str(work / "program")]).returncode
+    except subprocess.CalledProcessError as error:
+        return error.returncode
+    except OSError as error:
+        print(f"fken_cpl: {error}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

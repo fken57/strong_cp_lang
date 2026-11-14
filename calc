@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+    printf "使い方: %s ファイル.fken\n        %s 'ソースコード'\n        %s -f ファイル\n" "$0" "$0" "$0"
+}
+
+if [[ $# == 1 && ($1 == -h || $1 == --help) ]]; then
+    usage
+    exit 0
+elif [[ $# == 2 && $1 == -f ]]; then
+    source_text=$(cat -- "$2")
+elif [[ $# == 1 && $1 == *.fken ]]; then
+    source_text=$(cat -- "$1")
+elif [[ $# == 1 ]]; then
+    source_text=$1
+else
+    usage >&2
+    exit 2
+fi
+
+project_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+work_dir=$(mktemp -d)
+trap 'rm -rf -- "$work_dir"' EXIT
+
+gcc -std=c11 "$project_dir/calc4.c" -o "$work_dir/compiler"
+"$work_dir/compiler" "$source_text" > "$work_dir/program.s"
+gcc "$work_dir/program.s" -Wl,-z,noexecstack -o "$work_dir/program"
+"$work_dir/program"
+

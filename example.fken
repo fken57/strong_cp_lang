@@ -1,0 +1,9 @@
+let a = 0;
+while (a < 5) {
+    if (a == 2) {
+        print(99);
+    } else {
+        print(a);
+    }
+    a = a + 1;
+}
