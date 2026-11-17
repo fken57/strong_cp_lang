@@ -1,0 +1,26 @@
+fn factorial(n) {
+    if (n <= 1) {
+        return 1;
+    }
+    return n * factorial(n - 1);
+}
+
+fn add_to_all(a: &int[], delta) -> void {
+    rep(i, 0, a.size()) {
+        a[i] += delta;
+    }
+}
+
+fn sum(a: &int[]) {
+    int total = 0;
+    rep(i, 0, a.size()) {
+        total += a[i];
+    }
+    return total;
+}
+
+print(factorial(30));
+int[] values = [1, 2, 3];
+add_to_all(values, 10);
+print(values);
+print(sum(values));

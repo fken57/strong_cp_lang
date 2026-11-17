@@ -135,7 +135,7 @@ class CodegenE2E(unittest.TestCase):
             ("division order", "print(20 / 3);", "6\n"),
             ("signed division", "print(-20 / 3);", "-6\n"),
             ("negative divisor", "print(20 / -3);", "-6\n"),
-            ("consecutive unary minus", "print(--3);", "3\n"),
+            ("nested unary minus", "print(-(-3));", "3\n"),
             ("multiple prints", "print(1); print(2); print(3);", "1\n2\n3\n"),
             ("one variable", "let a = 3; print(a);", "3\n"),
             ("two variables", "let a = 3; let b = a + 4; print(a); print(b);", "3\n7\n"),
@@ -163,7 +163,11 @@ class CodegenE2E(unittest.TestCase):
 
     def test_rejected_sources(self):
         for source in ("print(missing);", "let a = 1", "print(1 +);",
-                       "{ let a = 1; } print(a);", "if (1) { print(2);"):
+                       "{ let a = 1; } print(a);", "if (1) { print(2);",
+                       "for (let i = 0; i < 1; i++) {}", "rep(i, 0, 1) {}",
+                       "print(read_int());", "let a = [1];", "let i = 0; i++;",
+                       "fn f() { return 1; }", "read_int();",
+                       "int[] a;", "while(1){break;}"):
             with self.subTest(source=source):
                 self.check_case(f"reject {source}", source)
 

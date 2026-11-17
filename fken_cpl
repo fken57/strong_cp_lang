@@ -1,8 +1,6 @@
 #!/usr/bin/env python3
 """Compile .fken to C++20, or compile and run it locally with --run."""
 import argparse
-import hashlib
-import json
 import os
 from pathlib import Path
 import shlex
@@ -10,53 +8,7 @@ import subprocess
 import sys
 import tempfile
 
-ROOT = Path(__file__).resolve().parent
-BUILD = ROOT / ".build"
-SOURCES = (
-    "fken_cpl.c", "typedef.c", "util.c", "lex.c", "parser.c", "analyze.c",
-    "generate_cpp.c", "runtime.hpp",
-)
-
-
-def build_compiler():
-    BUILD.mkdir(exist_ok=True)
-    command = shlex.split(os.environ.get("CC", "cc"))
-    flags = shlex.split(os.environ.get("CFLAGS", ""))
-    digest = hashlib.sha256(json.dumps(command + flags).encode())
-    for name in SOURCES:
-        digest.update((ROOT / name).read_bytes())
-    digest.update(Path(__file__).read_bytes())
-    fingerprint = digest.hexdigest()
-    binary = BUILD / "compiler"
-    stamp = BUILD / "compiler.sha256"
-    if binary.exists() and stamp.exists() and stamp.read_text() == fingerprint:
-        return binary
-    with tempfile.TemporaryDirectory(prefix="compiler-", dir=BUILD) as directory:
-        work = Path(directory)
-        # Embed the runtime so emitted C++ needs no project-local headers.
-        (work / "runtime.inc").write_text("".join(
-            json.dumps(line) + "\n"
-            for line in (ROOT / "runtime.hpp").read_text().splitlines(keepends=True)
-        ))
-        subprocess.run(command + [
-            "-std=c11", "-O2", "-Wall", "-Wextra",
-            "-Wno-unused-parameter", *flags,
-            "-I", str(work), str(ROOT / "fken_cpl.c"),
-            "-o", str(work / "compiler"),
-        ], check=True)
-        os.replace(work / "compiler", binary)
-    stamp.write_text(fingerprint)
-    return binary
-
-
-def boost_flags():
-    paths = []
-    if os.environ.get("FKEN_BOOST_INCLUDE"):
-        paths.append(Path(os.environ["FKEN_BOOST_INCLUDE"]))
-    local = ROOT / ".deps" / "boost" / "usr" / "include"
-    if local.is_dir():
-        paths.append(local)
-    return [flag for path in paths for flag in ("-I", str(path))]
+from compiler import BUILD, build_compiler, boost_flags
 
 
 def main():
@@ -67,14 +19,36 @@ def main():
     parser.add_argument("--code", help="source code instead of a file")
     parser.add_argument("-o", "--output", type=Path, help="write generated C++ to this file")
     parser.add_argument("--run", action="store_true", help="compile generated C++ and execute locally")
-    parser.add_argument("--version", action="version", version="fken_cpl 0.1.0")
+    parser.add_argument("--check", action="store_true", help="check source without generating C++")
+    modes = parser.add_mutually_exclusive_group()
+    modes.add_argument("--lsp", action="store_true", help="start the stdio language server")
+    modes.add_argument("--web", action="store_true", help="start the local Web editor")
+    parser.add_argument("--port", type=int, default=8765, help="local Web editor port")
+    parser.add_argument("--version", action="version", version="fken_cpl 0.6.0")
     args = parser.parse_args()
+    if args.web and not 0 <= args.port <= 65535:
+        parser.error("--port must be between 0 and 65535")
+    if args.lsp or args.web:
+        if args.source is not None or args.code is not None or args.run or args.check or args.output:
+            parser.error("--lsp/--web cannot be combined with source compilation")
+        try:
+            if args.lsp:
+                from lsp_server import run_stdio
+                return run_stdio()
+            from web_server import serve
+            serve(args.port)
+            return 0
+        except (OSError, subprocess.CalledProcessError) as error:
+            print(f"fken_cpl: {error}", file=sys.stderr)
+            return 1
+    if args.check and (args.run or args.output):
+        parser.error("--check cannot be combined with --run or --output")
     if (args.source is None) == (args.code is None):
         parser.error("provide one source file or --code")
     try:
         compiler = build_compiler()
         inputs = ["--code", args.code] if args.code is not None else [args.source]
-        result = subprocess.run([str(compiler), *inputs], stdout=subprocess.PIPE)
+        result = subprocess.run([str(compiler), *(["--check"] if args.check else []), *inputs], stdout=subprocess.PIPE)
         if result.returncode:
             return result.returncode
         if args.output:

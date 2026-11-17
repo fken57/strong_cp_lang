@@ -1,0 +1,23 @@
+// Sizes initialize the vectors; every row can grow independently.
+int rows = 2;
+int[][] grid(rows, 3);
+grid[0].push(10);
+grid.push([4, 5]);
+print(grid);
+
+int[] values;
+for (int i = 0; i < 10; i++) {
+    if (i == 4) { break; }
+    values.push(i * i);
+}
+print(values);
+print(values.pop());
+print(values.back());
+values.resize(5, 7);
+print(values);
+
+// Legacy declarations remain valid without warnings.
+let copy = values;
+copy.clear();
+print(values.size());
+print(copy.size());

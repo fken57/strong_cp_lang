@@ -81,6 +81,9 @@ void generate_binary_operation(ExprType type){
 }
 
 void generate_expr(Expr *expr){
+    if (expr->type == EXPR_CALL || expr->type == EXPR_ARRAY || expr->type == EXPR_INDEX || expr->type == EXPR_CONSTRUCT) {
+        error_at(expr->token, "this feature requires the C++ backend (fken_cpl)");
+    }
     if(expr->type == EXPR_BINARY) {
         generate_expr(expr->data.binary.left);
         printf("pushq %%rax\n");
@@ -107,6 +110,9 @@ void generate_let(Statement *stmt){
 }
 
 void generate_assign(Statement *stmt){
+    if ((stmt->data.assign.target && stmt->data.assign.target->type != EXPR_VARIABLE) || stmt->data.assign.op != TK_ASSIGN) {
+        error_at(stmt->token, "this update requires the C++ backend (fken_cpl)");
+    }
     generate_expr(stmt->data.assign.value);
     printf("\tmovq %%rax, %d(%%rbp)\n", stmt->data.assign.offset);
 }
@@ -141,6 +147,11 @@ void generate_block(Statement *stmt,int *id){
         if(stmt->data.block.statements[i] == NULL) {
             continue;
         }
+        if (stmt->data.block.statements[i]->type == STMT_FOR ||
+            stmt->data.block.statements[i]->type == STMT_BREAK ||
+            stmt->data.block.statements[i]->type == STMT_RETURN || stmt->data.block.statements[i]->type == STMT_EXPR) {
+            error_at(stmt->data.block.statements[i]->token, "this statement requires the C++ backend (fken_cpl)");
+        }
         if(stmt->data.block.statements[i]->type == STMT_LET) {
             generate_let(stmt->data.block.statements[i]);
         }
@@ -171,11 +182,17 @@ void generate_print(Statement *stmt){
 }
 
 void generate(Program *program){
+    if (program->function_count) error_at(program->functions[0]->token, "functions require the C++ backend (fken_cpl)");
     start(program);
     int id = 0;
     for(int i = 0; i < program->count; i++) {
         if(program->statesments[i] == NULL) {
             continue;
+        }
+        if (program->statesments[i]->type == STMT_FOR ||
+            program->statesments[i]->type == STMT_BREAK ||
+            program->statesments[i]->type == STMT_RETURN || program->statesments[i]->type == STMT_EXPR) {
+            error_at(program->statesments[i]->token, "this statement requires the C++ backend (fken_cpl)");
         }
         if(program->statesments[i]->type == STMT_LET) {
             generate_let(program->statesments[i]);

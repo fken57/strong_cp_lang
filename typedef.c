@@ -68,6 +68,7 @@
 typedef struct Expr Expr;
 typedef struct Statement Statement;
 typedef struct Token Token;
+typedef struct Function Function;
 
 typedef struct 
 {
@@ -76,6 +77,8 @@ typedef struct
     size_t capacity;
     int offset;
     int required_size;
+    Function **functions;
+    size_t function_count;
 }Program;
 
 typedef enum {
@@ -86,8 +89,9 @@ typedef enum {
     STMT_BLOCK,     // ブロック
     STMT_IF,        // 条件分岐
     STMT_WHILE,     // 繰り返し
-    //STMT_RETURN,    // 関数の戻り値
-    //STMT_FUNCTION   // 関数定義
+    STMT_FOR,
+    STMT_RETURN,
+    STMT_BREAK,
 } StatementType;
 
 
@@ -95,16 +99,27 @@ typedef enum {
     TK_NUMBER,
     TK_IDENT,
     TK_LET,
+    TK_INT,
+    TK_BREAK,
+    TK_DOT,
     TK_IF,
     TK_ELSE,
     TK_WHILE,
-    //TK_RETURN,
-    //TK_FN,
+    TK_FOR,
+    TK_REP,
+    TK_RETURN,
+    TK_FN,
     TK_PRINT,
     TK_PLUS,
     TK_MINUS,
     TK_STAR,
     TK_SLASH,
+    TK_INC,
+    TK_DEC,
+    TK_PLUS_ASSIGN,
+    TK_MINUS_ASSIGN,
+    TK_STAR_ASSIGN,
+    TK_SLASH_ASSIGN,
     TK_ASSIGN,
     TK_EQ,
     TK_NE,
@@ -116,9 +131,15 @@ typedef enum {
     TK_RPAREN,
     TK_LBRACE,
     TK_RBRACE,
+    TK_LBRACKET,
+    TK_RBRACKET,
     TK_SEMICOLON,
     TK_COMMA,
-    TK_EOF
+    TK_COLON,
+    TK_ARROW,
+    TK_AMP,
+    TK_EOF,
+    TK_INVALID
 } TokenType;
 
 
@@ -127,13 +148,21 @@ typedef enum {
     EXPR_VARIABLE,
     EXPR_BINARY,
     EXPR_UNARY,
-    //EXPR_CALL
+    EXPR_CALL,
+    EXPR_ARRAY,
+    EXPR_INDEX,
+    EXPR_CONSTRUCT,
 } ExprType;
+
+// A nonnegative type is the number of vector dimensions; -1 denotes void.
+typedef int ValueType;
+enum { VALUE_VOID = -1, VALUE_INT = 0, VALUE_ARRAY = 1 };
 
 
 struct Expr{
     ExprType type;
     Token *token;
+    ValueType value_type;
 
     union {
         struct
@@ -160,6 +189,30 @@ struct Expr{
             Expr *operand;
         } unary;
 
+        struct {
+            char *name;
+            Expr **args;
+            size_t count;
+            Function *function;
+            Expr *receiver;
+        } call;
+
+        struct {
+            Expr **items;
+            size_t count;
+        } array;
+
+        struct {
+            ValueType type;
+            Expr **sizes;
+            size_t count;
+        } construct;
+
+        struct {
+            Expr *array;
+            Expr *index;
+        } index;
+
     } data;
 };
 
@@ -172,6 +225,8 @@ struct Statement
             char *name;
             Expr *value;
             int offset;
+            bool explicit_type;
+            ValueType declared_type;
         } let;
 
         struct {
@@ -179,9 +234,24 @@ struct Statement
         } print;
 
         struct {
+            Expr *expression;
+        } expr;
+
+        struct {
+            Expr *value;
+        } return_stmt;
+
+        struct {
             Expr *condition;
             Statement *body;
         } while_stmt;
+
+        struct {
+            Statement *init;
+            Expr *condition;
+            Statement *step;
+            Statement *body;
+        } for_stmt;
 
         struct {
             Expr *condition;
@@ -199,6 +269,8 @@ struct Statement
             char *name;
             Expr *value;
             int offset;
+            Expr *target;
+            TokenType op;
         } assign;
         
     } data;
@@ -215,6 +287,26 @@ struct Token {
     char *text;
     size_t line;
     size_t column;
+    size_t offset;
+    size_t length;
+};
+
+typedef struct {
+    char *name;
+    Token *token;
+    ValueType type;
+    bool by_ref;
+    int offset;
+} Parameter;
+
+struct Function {
+    char *name;
+    Token *token;
+    Parameter *params;
+    size_t count;
+    ValueType return_type;
+    Statement *body;
+    size_t id;
 };
 
 typedef struct {
@@ -226,6 +318,7 @@ typedef struct {
 typedef struct {
     char *name;
     int offset;
+    ValueType value_type;
 } Symbol;
 
 typedef struct {
@@ -233,6 +326,9 @@ typedef struct {
     size_t count;
     size_t capacity;
     size_t scope_start;
+    Program *program;
+    Function *function;
+    size_t loop_depth;
 } SymbolTable;
 
 #endif

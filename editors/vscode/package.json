@@ -1,0 +1,54 @@
+{
+  "name": "fken-cpl",
+  "displayName": "fken_cpl",
+  "description": "Language support and C++ conversion for fken_cpl competitive programming.",
+  "version": "0.6.0",
+  "publisher": "fken57",
+  "license": "UNLICENSED",
+  "repository": { "type": "git", "url": "https://github.com/fken57/strong_cp_lang.git" },
+  "engines": { "vscode": "^1.91.0", "node": ">=22" },
+  "categories": ["Programming Languages"],
+  "extensionKind": ["workspace"],
+  "capabilities": { "untrustedWorkspaces": { "supported": false }, "virtualWorkspaces": false },
+  "main": "./extension.js",
+  "contributes": {
+    "languages": [{
+      "id": "fken_cpl",
+      "aliases": ["fken_cpl"],
+      "extensions": [".fken"],
+      "configuration": "./language-configuration.json"
+    }],
+    "grammars": [{
+      "language": "fken_cpl",
+      "scopeName": "source.fken",
+      "path": "./syntaxes/fken.tmLanguage.json"
+    }],
+    "commands": [
+      { "command": "fkenCpl.convertToCpp", "title": "fken_cpl: C++ に変換", "icon": "$(code)" },
+      { "command": "fkenCpl.restartLanguageServer", "title": "fken_cpl: 言語サーバーを再起動" },
+      { "command": "fkenCpl.showOutput", "title": "fken_cpl: 出力ログを表示" }
+    ],
+    "menus": {
+      "editor/title": [{ "command": "fkenCpl.convertToCpp", "when": "editorLangId == fken_cpl", "group": "navigation" }],
+      "editor/context": [{ "command": "fkenCpl.convertToCpp", "when": "editorLangId == fken_cpl", "group": "1_modification" }]
+    },
+    "keybindings": [{ "command": "fkenCpl.convertToCpp", "key": "ctrl+alt+c", "mac": "cmd+alt+c", "when": "editorTextFocus && editorLangId == fken_cpl" }],
+    "configuration": {
+      "title": "fken_cpl",
+      "properties": {
+        "fkenCpl.pythonPath": { "type": "string", "default": "", "scope": "machine", "description": "Python 3 実行ファイル。空なら python3（Windows は python）。引数は含めません。" },
+        "fkenCpl.cCompilerPath": { "type": "string", "default": "", "scope": "machine", "description": "C コンパイラの実行ファイル。空なら CC 環境変数、または cc（Windows は gcc）。GCC / Clang に対応。" },
+        "fkenCpl.serverPath": { "type": "string", "default": "", "scope": "machine", "description": "開発時に使用する lsp_server.py の絶対パス。空なら拡張に同梱したサーバーを使用。" },
+        "fkenCpl.trace.server": { "type": "string", "enum": ["off", "messages", "verbose"], "default": "off", "description": "言語サーバーとの通信ログ。" }
+      }
+    }
+  },
+  "scripts": {
+    "bundle-server": "python3 scripts/bundle-server.py",
+    "vscode:prepublish": "npm run bundle-server",
+    "package": "vsce package --skip-license --out ../../.build/fken-cpl-0.6.0.vsix",
+    "test": "npm run bundle-server && node test/run.js"
+  },
+  "dependencies": { "vscode-languageclient": "11.0.0" },
+  "devDependencies": { "@vscode/test-electron": "3.1.0", "@vscode/vsce": "4.1.1" }
+}

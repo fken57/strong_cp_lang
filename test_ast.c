@@ -199,6 +199,7 @@ static void free_statement(Statement *s) {
             break;
         case STMT_ASSIGN:
             free(s->data.assign.name);
+            free_expr(s->data.assign.target);
             free_expr(s->data.assign.value);
             break;
         case STMT_PRINT:

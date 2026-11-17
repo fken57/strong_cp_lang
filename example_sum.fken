@@ -1,0 +1,9 @@
+int N = read_int();
+int[] A[N];
+rep(i,0,N){
+    A[i] = read_int();
+}
+
+for(int i = 0; i < N; i++){
+    print(A[i]);
+}

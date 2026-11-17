@@ -1,0 +1,23 @@
+name: Container
+on:
+  push:
+    branches: [main, deploy/neoshowcase]
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  container:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Build runtime image
+        run: docker build --pull --tag fken-cpl:ci .
+      - name: Test read-only runtime without a C compiler
+        shell: bash
+        run: |
+          fken_container_id=$(docker run --detach --read-only --tmpfs /tmp:rw,noexec,nosuid,size=16m --publish 127.0.0.1:8080:8080 fken-cpl:ci)
+          trap 'docker logs "$fken_container_id"; docker rm --force "$fken_container_id"' EXIT
+          python3 scripts/smoke_web.py --host public.example

@@ -1,0 +1,8 @@
+.vscode/**
+.vscode-test/**
+test/**
+scripts/**
+server/.build/**
+server/__pycache__/**
+package-lock.json
+**/*.vsix

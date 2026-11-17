@@ -3,3 +3,8 @@
 __pycache__/
 a.out
 test_ast
+node_modules/
+editors/vscode/server/
+editors/vscode/.vscode-test/
+.env
+.env.*

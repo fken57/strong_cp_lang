@@ -1,0 +1,17 @@
+.git
+.github
+.build
+.deps
+**/node_modules
+**/__pycache__
+editors
+deploy
+.agents
+.codex
+.aws
+.env
+.env.*
+*.vsix
+*.tar
+*.log
+tempCodeRunnerFile*
