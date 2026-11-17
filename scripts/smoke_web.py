@@ -2,7 +2,7 @@
 import argparse
 import json
 import time
-from urllib.error import HTTPError, URLError
+from urllib.error import HTTPError
 from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
 
@@ -40,7 +40,7 @@ while True:
         health = json.loads(request('/api/health'))
         assert health['status'] == 'ready'
         break
-    except (URLError, TimeoutError, AssertionError):
+    except (OSError, AssertionError):
         if time.monotonic() >= until:
             raise
         time.sleep(0.25)
