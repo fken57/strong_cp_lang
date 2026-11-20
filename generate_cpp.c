@@ -339,8 +339,12 @@ static void cpp_statement(const Statement *stmt) {
             if (stmt->data.for_stmt.step) {
                 if (stmt->data.for_stmt.step->type == STMT_EXPR) {
                     cpp_expr(stmt->data.for_stmt.step->data.expr.expression);
-                } else {
+                } else if (stmt->data.for_stmt.step->type == STMT_ASSIGN) {
                     cpp_assignment(stmt->data.for_stmt.step);
+                } else {
+                    fputs("([&]() ", stdout);
+                    cpp_statement(stmt->data.for_stmt.step);
+                    fputs("())", stdout);
                 }
             }
             fputs(")\n", stdout);
