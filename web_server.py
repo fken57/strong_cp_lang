@@ -11,9 +11,11 @@ from language_service import LanguageService, MAX_SOURCE_BYTES
 
 ASSETS = {"/": ("index.html", "text/html; charset=utf-8"),
           "/app.js": ("app.js", "text/javascript; charset=utf-8"),
+          "/runner.js": ("runner.js", "text/javascript; charset=utf-8"),
           "/style.css": ("style.css", "text/css; charset=utf-8"),
           "/favicon.svg": ("favicon.svg", "image/svg+xml")}
 EXAMPLES = [("vectors", "多次元 vector と break", "example_vectors.fken"),
+            ("graph", "構造体と重み付きグラフ", "example_graph.fken"),
             ("functions", "関数と再帰", "example_functions.fken"),
             ("sum", "入力と配列", "example_sum.fken"),
             ("bigint", "整数の自動昇格", "example_bigint.fken")]
@@ -121,7 +123,7 @@ def make_server(port=8765, service=None, host="127.0.0.1", allowed_hosts=None):
                 self.send_json(200, [{"id": key, "label": label, "source": (ROOT / filename).read_text()}
                                      for key, label, filename in EXAMPLES])
             elif path == "/api/health":
-                self.send_json(200, {"name": "fken_cpl", "version": "0.6.0", "status": "ready"})
+                self.send_json(200, {"name": "fken_cpl", "version": "0.7.0", "status": "ready"})
             elif path in ASSETS:
                 filename, content_type = ASSETS[path]
                 self.send_bytes(200, (ROOT / "web" / filename).read_bytes(), content_type)
@@ -150,6 +152,8 @@ def make_server(port=8765, service=None, host="127.0.0.1", allowed_hosts=None):
                     result = language.completions(source, data["position"])
                 elif path == "/api/hover":
                     result = {"hover": language.hover(source, data["position"])}
+                elif path == "/api/plan":
+                    result = language.execution_plan(source)
                 elif path == "/api/compile":
                     result = language.compile(source)
                 else:

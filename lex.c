@@ -54,6 +54,17 @@ TokenArray *lex(Source *source) {
                         i++; column++;
                     }
                     break;
+                case '\'':
+                    if (i < source->length && source->data[i] == '\\') {
+                        if (++i == source->length || (source->data[i] != 'n' && source->data[i] != 't'))
+                            error_at(&token, "expected a space, newline or tab separator");
+                    } else if (i == source->length || source->data[i] != ' ') {
+                        error_at(&token, "expected a space, newline or tab separator");
+                    }
+                    if (++i == source->length || source->data[i++] != '\'') error_at(&token, "expected closing quote");
+                    column += i - start - 1;
+                    token.type = TK_CHAR;
+                    break;
                 case '(': token.type = TK_LPAREN; break;
                 case ')': token.type = TK_RPAREN; break;
                 case '{': token.type = TK_LBRACE; break;
@@ -70,6 +81,9 @@ TokenArray *lex(Source *source) {
                         token.type = c == '=' ? TK_EQ : c == '!' ? TK_NE :
                                      c == '<' ? TK_LE : TK_GE;
                         i++; column++;
+                    } else if ((c == '<' || c == '>') && i < source->length && source->data[i] == c) {
+                        token.type = c == '<' ? TK_INSERT : TK_EXTRACT;
+                        ++i; ++column;
                     } else if (c == '=') token.type = TK_ASSIGN;
                     else if (c == '<') token.type = TK_LT;
                     else if (c == '>') token.type = TK_GT;

@@ -69,6 +69,15 @@ typedef struct Expr Expr;
 typedef struct Statement Statement;
 typedef struct Token Token;
 typedef struct Function Function;
+typedef struct {
+    char *name;
+    int type;
+} Field;
+typedef struct {
+    char *name;
+    Field *fields;
+    size_t count;
+} Record;
 
 typedef struct 
 {
@@ -79,9 +88,14 @@ typedef struct
     int required_size;
     Function **functions;
     size_t function_count;
+    Record *records;
+    size_t record_count;
 }Program;
 
 typedef enum {
+    STMT_DECLARATIONS,
+    STMT_WRITE,
+    STMT_EACH,
     STMT_LET,       // 変数宣言
     STMT_ASSIGN,    // 代入
     STMT_EXPR,      // 式文
@@ -96,6 +110,7 @@ typedef enum {
 
 
 typedef enum {
+    TK_INSERT, TK_EXTRACT, TK_CHAR,
     TK_NUMBER,
     TK_IDENT,
     TK_LET,
@@ -152,11 +167,18 @@ typedef enum {
     EXPR_ARRAY,
     EXPR_INDEX,
     EXPR_CONSTRUCT,
+    EXPR_FIELD,
+    EXPR_RECORD,
 } ExprType;
 
 // A nonnegative type is the number of vector dimensions; -1 denotes void.
 typedef int ValueType;
-enum { VALUE_VOID = -1, VALUE_INT = 0, VALUE_ARRAY = 1 };
+enum { VALUE_VOID = -1, VALUE_INT = 0, VALUE_ARRAY = 1, TYPE_STRIDE = 65536,
+       VALUE_EDGE = TYPE_STRIDE, VALUE_GRAPH = 2 * TYPE_STRIDE,
+       VALUE_DIGRAPH = 3 * TYPE_STRIDE, VALUE_RECORD = 4 * TYPE_STRIDE };
+static inline int type_rank(ValueType t) { return t < 0 ? 0 : t % TYPE_STRIDE; }
+static inline int type_base(ValueType t) { return t - type_rank(t); }
+static inline bool graph_type(ValueType t) { return t == VALUE_GRAPH || t == VALUE_DIGRAPH; }
 
 
 struct Expr{
@@ -208,6 +230,9 @@ struct Expr{
             size_t count;
         } construct;
 
+        struct { ValueType type; size_t *indices; Expr **values; size_t count; } record;
+        struct { Expr *owner; char *name; size_t index; } field;
+
         struct {
             Expr *array;
             Expr *index;
@@ -246,6 +271,8 @@ struct Statement
             Statement *body;
         } while_stmt;
 
+        struct { Expr *value; char separator; } write;
+        struct { ValueType type; char *name; int offset; Expr *values; Statement *body; } each;
         struct {
             Statement *init;
             Expr *condition;
@@ -306,6 +333,7 @@ struct Function {
     size_t count;
     ValueType return_type;
     Statement *body;
+    ValueType owner;
     size_t id;
 };
 
@@ -313,6 +341,7 @@ typedef struct {
     Token *tokens;
     size_t count;
     size_t capacity;
+    Program *program;
 } TokenArray;
 
 typedef struct {

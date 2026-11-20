@@ -51,6 +51,26 @@ class CppE2E(unittest.TestCase):
         )
         self.assertEqual(built.returncode, 0, built.stderr)
 
+    def test_record_graph_streams(self):
+        self.assert_output((ROOT / "example_graph.fken").read_text(), "2 11\n3 9223372036854775809\n",
+                           "3 2   1 2 10   1 3 9223372036854775808")
+        self.assert_output("""
+struct P {
+    int x;
+    fn grow(a: &P[]) { modify(self, a); }
+}
+fn modify(p: &P, a: &P[]) -> void { a.resize(12); p.x++; }
+P[] a(1);
+a[0].grow(a);
+P p = a[0]; p.x++;
+graph G(2);
+G.add(0,1); G.add(1,1); G.add(0,1,-2);
+digraph D(2); D.add(0,1);
+print(p.x); print(a[0].x); print(G.edge_count()); print(G[1].size());
+for(edge e : G[1]) { print(e.id); }
+print(D[1].size());
+""", "2\n1\n3\n4\n0\n1\n1\n2\n0\n")
+
     def test_functions_recursion_and_forward_calls(self):
         source = r'''
 print(add(7, 8));

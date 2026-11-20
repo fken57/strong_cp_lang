@@ -9,12 +9,12 @@ function escapeHtml(text) {
   return text.replace(/[&<>"']/g, (char) => ({"&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;"}[char]));
 }
 function syntax(text) {
-  const pattern = /(\/\/[^\n]*|\b(?:fn|let|if|else|while|for|rep|return|break|int|void)\b|\b(?:print|read_int|read_vec|array|len|push|pop|back|size|resize|clear)\b|\b[0-9]+\b)/g;
+  const pattern = /(\/\/[^\n]*|\b(?:struct|graph|digraph|edge|cin|cout|fn|let|if|else|while|for|rep|return|break|int|void)\b|\b(?:print|read_int|read_vec|array|len|push|pop|back|size|resize|clear|add|edge_count)\b|\b[0-9]+\b)/g;
   let result = "", end = 0;
   for (const match of text.matchAll(pattern)) {
     const token = match[0];
     const kind = token.startsWith("//") ? "comment" : /^[0-9]/.test(token) ? "number" :
-      /^(print|read_int|read_vec|array|len|push|pop|back|size|resize|clear)$/.test(token) ? "builtin" : "keyword";
+      /^(print|read_int|read_vec|array|len|push|pop|back|size|resize|clear|add|edge_count)$/.test(token) ? "builtin" : "keyword";
     result += escapeHtml(text.slice(end, match.index)) + '<span class="token-' + kind + '">' + escapeHtml(token) + "</span>";
     end = match.index + token.length;
   }
@@ -252,6 +252,24 @@ source.addEventListener("input", () => {
   setAnalysis("変更をチェックします…", "pending");
   if (!state.composing) { analyzeTimer = setTimeout(analyze, 250); completionTimer = setTimeout(() => complete(false), 150); }
 });
+const pairs = new Map([["(", ")"], ["[", "]"], ["{", "}"]]);
+source.addEventListener("beforeinput", event => {
+  if (!event.cancelable || event.isComposing || state.composing) return;
+  const start = source.selectionStart, end = source.selectionEnd;
+  const left = source.value[start - 1], right = source.value[end];
+  if (event.inputType === "deleteContentBackward" && start === end && pairs.has(left) && pairs.get(left) === right) {
+    event.preventDefault();
+    replaceRange("", start - 1, end + 1);
+  } else if (event.inputType === "insertText" && pairs.has(event.data)) {
+    event.preventDefault();
+    replaceRange(event.data + source.value.slice(start, end) + pairs.get(event.data), start, end);
+    source.setSelectionRange(start + 1, end + 1);
+  } else if (event.inputType === "insertText" && start === end && right === event.data && [")", "]", "}"].includes(right)) {
+    event.preventDefault();
+    source.setSelectionRange(end + 1, end + 1);
+  }
+  updateCursor();
+});
 source.addEventListener("compositionstart", () => { state.composing = true; hideCompletion(); clearTimeout(analyzeTimer); });
 source.addEventListener("compositionend", () => { state.composing = false; analyze(); });
 source.addEventListener("scroll", () => { syncScroll(); hideCompletion(); });
@@ -355,3 +373,45 @@ $("restore-draft").addEventListener("click", () => {
     await convert();
   } catch (_) { setConnection(false); setAnalysis("サーバーに接続できません。再読み込みしてください。", "errors"); }
 })();
+
+let running = null;
+function finishRun(message) {
+  if (!running) return;
+  running.controller.abort();
+  running.worker?.terminate();
+  clearTimeout(running.timer);
+  running = null;
+  $("run").textContent = "▶ 実行";
+  $("run-status").textContent = message;
+}
+function invalidateRun() {
+  if (running) finishRun("入力の変更により実行を中止しました。");
+  else $("run-status").textContent = "";
+  $("stdout").textContent = "";
+}
+source.addEventListener("input", invalidateRun);
+$("stdin").addEventListener("input", invalidateRun);
+$("run").addEventListener("click", async () => {
+  if (running) { finishRun("停止しました。"); return; }
+  const job = {controller: new AbortController()};
+  running = job;
+  $("run").textContent = "■ 停止";
+  $("run-status").textContent = "チェック中…";
+  $("stdout").textContent = "";
+  try {
+    const data = await request("plan", {source: source.value}, job.controller.signal);
+    if (running !== job) return;
+    renderDiagnostics(data.diagnostics);
+    if (data.diagnostics.length) { finishRun("診断に表示されたエラーを修正してください。"); return; }
+    job.worker = new Worker("/runner.js");
+    job.worker.onmessage = ({data}) => {
+      if (running !== job) return;
+      $("stdout").textContent = data.output;
+      finishRun(data.error || "実行が完了しました。");
+    };
+    job.worker.onerror = () => { if (running === job) finishRun("実行中にエラーが発生しました。"); };
+    job.timer = setTimeout(() => { if (running === job) finishRun("実行時間の上限（3 秒）に達しました。"); }, 3000);
+    $("run-status").textContent = "実行中…";
+    job.worker.postMessage({plan: data.plan, stdin: $("stdin").value});
+  } catch (error) { if (running === job) finishRun(error.message); }
+});

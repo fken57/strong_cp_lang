@@ -2,7 +2,7 @@
   "name": "fken-cpl",
   "displayName": "fken_cpl",
   "description": "Language support and C++ conversion for fken_cpl competitive programming.",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "publisher": "fken57",
   "license": "UNLICENSED",
   "repository": { "type": "git", "url": "https://github.com/fken57/strong_cp_lang.git" },
@@ -46,7 +46,7 @@
   "scripts": {
     "bundle-server": "python3 scripts/bundle-server.py",
     "vscode:prepublish": "npm run bundle-server",
-    "package": "vsce package --skip-license --out ../../.build/fken-cpl-0.6.0.vsix",
+    "package": "vsce package --skip-license --out ../../.build/fken-cpl-0.7.0.vsix",
     "test": "npm run bundle-server && node test/run.js"
   },
   "dependencies": { "vscode-languageclient": "11.0.0" },

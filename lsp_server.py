@@ -88,7 +88,7 @@ class LspServer:
                     "hoverProvider": True,
                     "diagnosticProvider": {"identifier": "fken_cpl", "interFileDependencies": False,
                                            "workspaceDiagnostics": False}},
-                    "serverInfo": {"name": "fken_cpl", "version": "0.6.0"}}
+                    "serverInfo": {"name": "fken_cpl", "version": "0.7.0"}}
             elif not self.initialized:
                 return [dict(response, error={"code": -32002, "message": "Server not initialized"})] if request else []
             elif method == "shutdown":

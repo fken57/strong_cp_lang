@@ -47,7 +47,12 @@ while True:
 assert b'id="source"' in request('/')
 assert request('/app.js')
 assert request('/style.css')
-assert json.loads(request('/api/examples'))
+assert request('/runner.js')
+examples = json.loads(request('/api/examples'))
+graph = next(item['source'] for item in examples if item['id'] == 'graph')
+plan = json.loads(request('/api/plan', {'source': graph}))
+assert not plan['diagnostics'] and plan['plan']['records']
+assert 'fken::Graph<false>' in json.loads(request('/api/compile', {'source': graph}))['cpp']
 source = 'int[][] g(2,3); g[0].push(7); for(int i=0;i<g.size();i++){if(i==1){break;} print(g[i]);}'
 compiled = json.loads(request('/api/compile', {'source': source, 'version': 4}))
 assert compiled['diagnostics'] == [] and compiled['version'] == 4

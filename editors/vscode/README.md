@@ -7,7 +7,7 @@
 
 1. 実行する環境に Python 3.9 以降と GCC / Clang の C コンパイラを用意します。
    Ubuntu / WSL は `sudo apt-get install python3 gcc`。
-2. VS Code の拡張機能メニューから **VSIX からのインストール…** を選び、`fken-cpl-0.6.0.vsix` を開きます。
+2. VS Code の拡張機能メニューから **VSIX からのインストール…** を選び、`fken-cpl-0.7.0.vsix` を開きます。
    Remote WSL を使う場合は、WSL に接続したウィンドウでインストールします。
 3. 信頼したフォルダーで `main.fken` を作成します。初回は C 製変換器を自動ビルドします。
 4. Ctrl+Space で補完、マウスを重ねて型・説明を表示します。診断は問題パネルにも表示されます。

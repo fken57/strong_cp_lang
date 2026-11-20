@@ -3,9 +3,9 @@
   "scopeName": "source.fken",
   "patterns": [
     { "name": "comment.line.double-slash.fken", "begin": "//", "end": "$" },
-    { "name": "keyword.control.fken", "match": "\\b(?:let|fn|return|if|else|while|for|rep|break)\\b" },
-    { "name": "storage.type.fken", "match": "\\b(?:int|void)\\b" },
-    { "name": "support.function.fken", "match": "\\b(?:print|read_int|read_vec|array|len|push|pop|back|size|resize|clear)\\b" },
+    { "name": "keyword.control.fken", "match": "\\b(?:struct|let|fn|return|if|else|while|for|rep|break)\\b" },
+    { "name": "storage.type.fken", "match": "\\b(?:int|void|graph|digraph|edge)\\b" },
+    { "name": "support.function.fken", "match": "\\b(?:add|edge_count|cin|cout|print|read_int|read_vec|array|len|push|pop|back|size|resize|clear)\\b" },
     { "name": "entity.name.function.fken", "match": "\\b[A-Za-z_][A-Za-z_0-9]*(?=\\s*\\()" },
     { "name": "constant.numeric.integer.fken", "match": "\\b[0-9]+\\b" },
     { "name": "keyword.operator.fken", "match": "->|\\+\\+|--|[+*/<>=!&-]" },

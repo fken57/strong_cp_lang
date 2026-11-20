@@ -25,10 +25,12 @@ Statement* parse_print_statement(TokenArray* tokens, int *pos);
 Program* parse(TokenArray* tokens);
 
 
+static ValueType named_type(Program *program, const char *name);
+
 /* Return the matching ')' or ']' within the current expression. */
 static int matching_close(TokenArray *tokens, int open, int end) {
     TokenType left = tokens->tokens[open].type;
-    TokenType right = left == TK_LPAREN ? TK_RPAREN : TK_RBRACKET;
+    TokenType right = left == TK_LPAREN ? TK_RPAREN : left == TK_LBRACE ? TK_RBRACE : TK_RBRACKET;
     int depth = 0;
     for (int i = open; i < end; i++) {
         if (tokens->tokens[i].type == left) depth++;
@@ -45,8 +47,8 @@ static Expr **parse_items(TokenArray *tokens, int begin, int end, size_t *count)
     int start = begin, depth = 0;
     for (int i = begin; i <= end; i++) {
         TokenType kind = i == end ? TK_COMMA : tokens->tokens[i].type;
-        if (kind == TK_LPAREN || kind == TK_LBRACKET) depth++;
-        if (kind == TK_RPAREN || kind == TK_RBRACKET) depth--;
+        if (kind == TK_LPAREN || kind == TK_LBRACKET || kind == TK_LBRACE) depth++;
+        if (kind == TK_RPAREN || kind == TK_RBRACKET || kind == TK_RBRACE) depth--;
         if (depth < 0) parse_error(tokens, i, "unexpected closing delimiter");
         if (i == end || (kind == TK_COMMA && depth == 0)) {
             Expr *item = parse_equality(tokens, start, i);
@@ -72,7 +74,41 @@ Expr* parse_primary(TokenArray* tokens, int begin, int end) {
     } else if (token->type == TK_IDENT) {
         expr->type = EXPR_VARIABLE;
         expr->data.variable.var_name = token->text;
-        if (pos < end && tokens->tokens[pos].type == TK_LPAREN) {
+        if (pos < end && tokens->tokens[pos].type == TK_LBRACE) {
+            ValueType type = named_type(tokens->program, token->text);
+            if (type < VALUE_RECORD) parse_error(tokens, begin, "expected structure name");
+            const Record *r = &tokens->program->records[(type-VALUE_RECORD)/TYPE_STRIDE];
+            int close = matching_close(tokens, pos, end);
+            expr->type = EXPR_RECORD;
+            expr->data.record.type = type;
+            expr->data.record.values = calloc(r->count, sizeof(Expr*));
+            expr->data.record.indices = calloc(r->count, sizeof(size_t));
+            if (r->count && (!expr->data.record.values || !expr->data.record.indices)) error_at(NULL, "out of memory");
+            ++pos;
+            while (pos < close) {
+                Token *name = &tokens->tokens[pos++];
+                size_t field = 0;
+                while (field < r->count && strcmp(name->text, r->fields[field].name)) ++field;
+                if (field == r->count) error_at(name, "unknown field '%s'", name->text);
+                size_t n = expr->data.record.count;
+                for (size_t i = 0; i < n; ++i)
+                    if (expr->data.record.indices[i] == field) error_at(name, "duplicate initializer");
+                if (tokens->tokens[pos++].type != TK_COLON) error_at(name, "expected ':' after field name");
+                int start = pos;
+                while (pos < close && tokens->tokens[pos].type != TK_COMMA) {
+                    TokenType k = tokens->tokens[pos].type;
+                    if (k == TK_LPAREN || k == TK_LBRACKET || k == TK_LBRACE) pos = matching_close(tokens, pos, close);
+                    ++pos;
+                }
+                Expr *value = parse_equality(tokens, start, pos);
+                if (!value) error_at(name, "expected field value");
+                expr->data.record.indices[n] = field;
+                expr->data.record.values[n] = value;
+                expr->data.record.count++;
+                if (pos < close) ++pos;
+            }
+            pos = close + 1;
+        } else if (pos < end && tokens->tokens[pos].type == TK_LPAREN) {
             int close = matching_close(tokens, pos, end);
             expr->type = EXPR_CALL;
             expr->data.call.name = token->text;
@@ -104,9 +140,16 @@ Expr* parse_primary(TokenArray* tokens, int begin, int end) {
             if (!next->data.index.index) parse_error(tokens, pos, "expected index");
             pos = close + 1;
         } else if (suffix->type == TK_DOT) {
-            if (pos + 2 >= end || tokens->tokens[pos + 1].type != TK_IDENT ||
-                tokens->tokens[pos + 2].type != TK_LPAREN) {
-                parse_error(tokens, pos, "expected method call after '.'");
+            if (pos + 1 >= end || tokens->tokens[pos + 1].type != TK_IDENT)
+                parse_error(tokens, pos, "expected member name");
+            if (pos + 2 >= end || tokens->tokens[pos + 2].type != TK_LPAREN) {
+                next->type = EXPR_FIELD;
+                next->data.field.owner = expr;
+                next->data.field.name = tokens->tokens[pos + 1].text;
+                next->token = &tokens->tokens[pos + 1];
+                expr = next;
+                pos += 2;
+                continue;
             }
             int close = matching_close(tokens, pos + 2, end);
             next->type = EXPR_CALL;
@@ -149,9 +192,9 @@ Expr* parse_multiplicative(TokenArray* tokens, int begin, int end){
     Expr* expr = malloc(sizeof(Expr));
     int depth=0;
     for(int i = end-1; i >= begin; i--){
-        if(tokens->tokens[i].type == TK_LPAREN || tokens->tokens[i].type == TK_LBRACKET) {
+        if(tokens->tokens[i].type == TK_LPAREN || tokens->tokens[i].type == TK_LBRACKET || tokens->tokens[i].type == TK_LBRACE) {
             depth++;
-        } else if(tokens->tokens[i].type == TK_RPAREN || tokens->tokens[i].type == TK_RBRACKET) {
+        } else if(tokens->tokens[i].type == TK_RPAREN || tokens->tokens[i].type == TK_RBRACKET || tokens->tokens[i].type == TK_RBRACE) {
             depth--;
         }
 
@@ -190,9 +233,9 @@ Expr* parse_additive(TokenArray* tokens, int begin, int end){
     int depth=0;
     // TODO: Implement additive parsing
     for(int i = end-1; i >= begin; i--){
-        if(tokens->tokens[i].type == TK_LPAREN || tokens->tokens[i].type == TK_LBRACKET) {
+        if(tokens->tokens[i].type == TK_LPAREN || tokens->tokens[i].type == TK_LBRACKET || tokens->tokens[i].type == TK_LBRACE) {
             depth++;
-        } else if(tokens->tokens[i].type == TK_RPAREN || tokens->tokens[i].type == TK_RBRACKET) {
+        } else if(tokens->tokens[i].type == TK_RPAREN || tokens->tokens[i].type == TK_RBRACKET || tokens->tokens[i].type == TK_RBRACE) {
             depth--;
         }
 
@@ -239,9 +282,9 @@ Expr* parse_comparison(TokenArray* tokens, int begin, int end){
     int depth=0;
     // TODO: Implement comparison parsing
     for(int i = end-1; i >= begin; i--){
-        if(tokens->tokens[i].type == TK_LPAREN || tokens->tokens[i].type == TK_LBRACKET) {
+        if(tokens->tokens[i].type == TK_LPAREN || tokens->tokens[i].type == TK_LBRACKET || tokens->tokens[i].type == TK_LBRACE) {
             depth++;
-        } else if(tokens->tokens[i].type == TK_RPAREN || tokens->tokens[i].type == TK_RBRACKET) {
+        } else if(tokens->tokens[i].type == TK_RPAREN || tokens->tokens[i].type == TK_RBRACKET || tokens->tokens[i].type == TK_RBRACE) {
             depth--;
         }
 
@@ -305,9 +348,9 @@ Expr* parse_equality(TokenArray* tokens, int begin, int end){
     int depth=0;
     // TODO: Implement equality parsing
     for(int i = end-1; i >= begin; i--){
-        if(tokens->tokens[i].type == TK_LPAREN || tokens->tokens[i].type == TK_LBRACKET) {
+        if(tokens->tokens[i].type == TK_LPAREN || tokens->tokens[i].type == TK_LBRACKET || tokens->tokens[i].type == TK_LBRACE) {
             depth++;
-        } else if(tokens->tokens[i].type == TK_RPAREN || tokens->tokens[i].type == TK_RBRACKET) {
+        } else if(tokens->tokens[i].type == TK_RPAREN || tokens->tokens[i].type == TK_RBRACKET || tokens->tokens[i].type == TK_RBRACE) {
             depth--;
         }
         if(depth != 0) continue;
@@ -354,8 +397,10 @@ static Statement *parse_assignment_range(TokenArray *tokens, int begin, int end)
     Token *name = &tokens->tokens[begin++];
     statement->data.assign.name = copy_text(name->text, strlen(name->text));
     int target_begin = begin - 1;
-    while (begin < end && tokens->tokens[begin].type == TK_LBRACKET) {
-        begin = matching_close(tokens, begin, end) + 1;
+    while (begin < end) {
+        if (tokens->tokens[begin].type == TK_LBRACKET) begin = matching_close(tokens, begin, end) + 1;
+        else if (begin + 1 < end && tokens->tokens[begin].type == TK_DOT && tokens->tokens[begin+1].type == TK_IDENT) begin += 2;
+        else break;
     }
     statement->data.assign.target = parse_primary(tokens, target_begin, begin);
     if (has_prefix) {
@@ -379,12 +424,64 @@ static Statement *parse_assignment_range(TokenArray *tokens, int begin, int end)
     return statement;
 }
 
+static Statement *parse_stream(TokenArray *tokens, int begin, int end, bool input) {
+    Statement *block = calloc(1, sizeof(*block));
+    if (!block) error_at(NULL, "out of memory");
+    block->type = STMT_BLOCK;
+    block->token = &tokens->tokens[begin];
+    block->data.block.statements = calloc(end - begin, sizeof(Statement*));
+    if (!block->data.block.statements) error_at(NULL, "out of memory");
+    TokenType delimiter = input ? TK_EXTRACT : TK_INSERT;
+    int pos = begin + 1;
+    while (pos < end) {
+        if (tokens->tokens[pos++].type != delimiter) parse_error(tokens, pos-1, "unexpected stream operator");
+        int start = pos;
+        while (pos < end && tokens->tokens[pos].type != delimiter) {
+            TokenType k = tokens->tokens[pos].type;
+            if (k == TK_LPAREN || k == TK_LBRACKET || k == TK_LBRACE) pos = matching_close(tokens,pos,end);
+            ++pos;
+        }
+        if (start == pos) parse_error(tokens, start, "expected stream operand");
+        Statement *item = calloc(1, sizeof(*item));
+        if (!item) error_at(NULL, "out of memory");
+        item->token = &tokens->tokens[start];
+        if (input) {
+            Expr *target = parse_primary(tokens, start, pos);
+            const Expr *root = lvalue_root(target);
+            if (!root) parse_error(tokens, start, "expected input destination");
+            item->type = STMT_ASSIGN;
+            item->data.assign.target = target;
+            item->data.assign.name = copy_text(root->data.variable.var_name, strlen(root->data.variable.var_name));
+            item->data.assign.op = TK_ASSIGN;
+            Expr *read = calloc(1, sizeof(*read));
+            if (!read) error_at(NULL, "out of memory");
+            read->type = EXPR_CALL; read->token = item->token; read->data.call.name = "read_int";
+            item->data.assign.value = read;
+        } else {
+            item->type = STMT_WRITE;
+            if (start + 1 == pos && item->token->type == TK_CHAR) {
+                const char *t = item->token->text;
+                item->data.write.separator = t[1] == ' ' ? ' ' : t[2] == 'n' ? '\n' : '\t';
+            } else {
+                item->data.write.value = parse_equality(tokens, start, pos);
+                if (!item->data.write.value) parse_error(tokens, start, "expected output value");
+            }
+        }
+        block->data.block.statements[block->data.block.count++] = item;
+    }
+    return block;
+}
+
 static Statement *parse_effect_range(TokenArray *tokens, int begin, int end) {
+    if (begin + 1 < end && !strcmp(tokens->tokens[begin].text, "cin") && tokens->tokens[begin+1].type == TK_EXTRACT)
+        return parse_stream(tokens, begin, end, true);
+    if (begin + 1 < end && !strcmp(tokens->tokens[begin].text, "cout") && tokens->tokens[begin+1].type == TK_INSERT)
+        return parse_stream(tokens, begin, end, false);
     int depth = 0;
     for (int i = begin; i < end; i++) {
         TokenType kind = tokens->tokens[i].type;
-        if (kind == TK_LPAREN || kind == TK_LBRACKET) depth++;
-        if (kind == TK_RPAREN || kind == TK_RBRACKET) depth--;
+        if (kind == TK_LPAREN || kind == TK_LBRACKET || kind == TK_LBRACE) depth++;
+        if (kind == TK_RPAREN || kind == TK_RBRACKET || kind == TK_RBRACE) depth--;
         if (depth == 0 && (kind == TK_ASSIGN || kind == TK_INC || kind == TK_DEC ||
             kind == TK_PLUS_ASSIGN || kind == TK_MINUS_ASSIGN ||
             kind == TK_STAR_ASSIGN || kind == TK_SLASH_ASSIGN)) {
@@ -407,6 +504,9 @@ Statement* parse_assign_statement(TokenArray* tokens, int *pos){
     int begin = *pos;
     while ((size_t)*pos < tokens->count && tokens->tokens[*pos].type != TK_SEMICOLON) {
         TokenType kind = tokens->tokens[*pos].type;
+        if (kind == TK_LBRACE && *pos > begin && tokens->tokens[*pos-1].type == TK_IDENT) {
+            *pos = matching_close(tokens, *pos, (int)tokens->count) + 1; continue;
+        }
         if (kind == TK_EOF || kind == TK_LBRACE || kind == TK_RBRACE) {
             parse_error(tokens, *pos, "expected ';' after assignment");
         }
@@ -417,17 +517,32 @@ Statement* parse_assign_statement(TokenArray* tokens, int *pos){
     return statement;
 }
 
+static ValueType named_type(Program *program, const char *name) {
+    if (!strcmp(name, "int")) return VALUE_INT;
+    if (!strcmp(name, "graph")) return VALUE_GRAPH;
+    if (!strcmp(name, "digraph")) return VALUE_DIGRAPH;
+    if (!strcmp(name, "edge")) return VALUE_EDGE;
+    for (size_t i = 0; i < program->record_count; ++i) {
+        if (!strcmp(name, program->records[i].name)) return VALUE_RECORD + (int)i * TYPE_STRIDE;
+    }
+    return VALUE_VOID;
+}
+
+static bool declaration_start(TokenArray *tokens, int i) {
+    Token *t = &tokens->tokens[i];
+    return t->type == TK_LET || t->type == TK_INT ||
+           (t->type == TK_IDENT && named_type(tokens->program, t->text) != VALUE_VOID);
+}
+
 static ValueType parse_type(TokenArray *tokens, int *pos, int end, bool allow_void);
 
-Statement* parse_let_statement(TokenArray* tokens, int *pos) {
+static Statement *parse_declarator(TokenArray *tokens, int *pos, Token *keyword, ValueType type) {
     Statement *stmt = calloc(1, sizeof(*stmt));
     if (!stmt) error_at(NULL, "out of memory");
     stmt->type = STMT_LET;
-    stmt->token = &tokens->tokens[*pos];
-    stmt->data.let.explicit_type = stmt->token->type == TK_INT;
-    if (stmt->data.let.explicit_type) {
-        stmt->data.let.declared_type = parse_type(tokens, pos, (int)tokens->count, false);
-    } else { (*pos)++; }
+    stmt->token = keyword;
+    stmt->data.let.explicit_type = keyword->type != TK_LET;
+    stmt->data.let.declared_type = type;
     if ((size_t)*pos >= tokens->count || tokens->tokens[*pos].type != TK_IDENT) {
         parse_error(tokens, *pos, "expected identifier in declaration");
     }
@@ -436,6 +551,10 @@ Statement* parse_let_statement(TokenArray* tokens, int *pos) {
     int begin = *pos;
     while ((size_t)*pos < tokens->count && tokens->tokens[*pos].type != TK_SEMICOLON) {
         TokenType kind = tokens->tokens[*pos].type;
+        if (kind == TK_COMMA) break;
+        if (kind == TK_LPAREN || kind == TK_LBRACKET || kind == TK_LBRACE) {
+            *pos = matching_close(tokens, *pos, (int)tokens->count) + 1; continue;
+        }
         if (kind == TK_EOF || kind == TK_LBRACE || kind == TK_RBRACE) {
             parse_error(tokens, *pos, "expected ';' after declaration");
         }
@@ -472,8 +591,30 @@ Statement* parse_let_statement(TokenArray* tokens, int *pos) {
         }
         stmt->data.let.value = value;
     } else { parse_error(tokens, begin, "expected '=' in let declaration"); }
-    (*pos)++;
     return stmt;
+}
+
+Statement* parse_let_statement(TokenArray* tokens, int *pos) {
+    Token *keyword = &tokens->tokens[*pos];
+    ValueType type = VALUE_INT;
+    if (keyword->type == TK_LET) ++*pos;
+    else type = parse_type(tokens, pos, (int)tokens->count, false);
+    Statement *first = parse_declarator(tokens, pos, keyword, type);
+    if (tokens->tokens[*pos].type == TK_SEMICOLON) { ++*pos; return first; }
+    Statement *group = calloc(1, sizeof(*group));
+    if (!group) error_at(NULL, "out of memory");
+    group->type = STMT_DECLARATIONS;
+    group->token = keyword;
+    Statement *item = first;
+    for (;;) {
+        size_t n = group->data.block.count++;
+        group->data.block.statements = realloc(group->data.block.statements, (n+1) * sizeof(Statement*));
+        if (!group->data.block.statements) error_at(NULL, "out of memory");
+        group->data.block.statements[n] = item;
+        if (tokens->tokens[(*pos)++].type == TK_SEMICOLON) break;
+        item = parse_declarator(tokens, pos, keyword, type);
+    }
+    return group;
 }
 
 static Statement *parse_break_statement(TokenArray *tokens, int *pos) {
@@ -502,8 +643,11 @@ Statement* parse_if_statement(TokenArray* tokens, int *pos){
     (*pos)++;
 
     while((size_t)*pos < tokens->count && depth != 0){
-        if(tokens->tokens[*pos].type == TK_EOF ||
-           tokens->tokens[*pos].type == TK_LBRACE ||
+        if (tokens->tokens[*pos].type == TK_LBRACE && *pos > 0 && tokens->tokens[*pos-1].type == TK_IDENT) {
+            *pos = matching_close(tokens, *pos, (int)tokens->count) + 1;
+            continue;
+        }
+        if(tokens->tokens[*pos].type == TK_EOF || tokens->tokens[*pos].type == TK_LBRACE ||
            tokens->tokens[*pos].type == TK_RBRACE){
             break;
         }
@@ -579,8 +723,11 @@ Statement* parse_while_statement(TokenArray* tokens, int *pos){
     paren_depth = 1;
     (*pos)++;
     while((size_t)*pos < tokens->count && paren_depth != 0){
-        if(tokens->tokens[*pos].type == TK_EOF ||
-           tokens->tokens[*pos].type == TK_LBRACE ||
+        if (tokens->tokens[*pos].type == TK_LBRACE && *pos > 0 && tokens->tokens[*pos-1].type == TK_IDENT) {
+            *pos = matching_close(tokens, *pos, (int)tokens->count) + 1;
+            continue;
+        }
+        if(tokens->tokens[*pos].type == TK_EOF || tokens->tokens[*pos].type == TK_LBRACE ||
            tokens->tokens[*pos].type == TK_RBRACE){
             break;
         }
@@ -615,8 +762,22 @@ Statement* parse_for_statement(TokenArray *tokens, int *pos) {
     }
     int close = matching_close(tokens, *pos, (int)tokens->count);
     (*pos)++;
+    if (declaration_start(tokens, *pos) && tokens->tokens[*pos].type != TK_LET) {
+        int look = *pos;
+        ValueType type = parse_type(tokens, &look, close, false);
+        if (look + 1 < close && tokens->tokens[look].type == TK_IDENT && tokens->tokens[look+1].type == TK_COLON) {
+            statement->type = STMT_EACH;
+            statement->data.each.type = type;
+            statement->data.each.name = tokens->tokens[look].text;
+            statement->data.each.values = parse_equality(tokens, look+2, close);
+            if (!statement->data.each.values) parse_error(tokens, look+2, "expected range expression");
+            *pos = close + 1;
+            statement->data.each.body = parse_block(tokens, pos);
+            return statement;
+        }
+    }
     if (tokens->tokens[*pos].type == TK_SEMICOLON) (*pos)++;
-    else if ((tokens->tokens[*pos].type == TK_LET || tokens->tokens[*pos].type == TK_INT)) {
+    else if (declaration_start(tokens, *pos)) {
         statement->data.for_stmt.init = parse_let_statement(tokens, pos);
     } else {
         statement->data.for_stmt.init = parse_assign_statement(tokens, pos);
@@ -688,6 +849,9 @@ static Statement *parse_return_statement(TokenArray *tokens, int *pos) {
     int begin = ++(*pos);
     while ((size_t)*pos < tokens->count && tokens->tokens[*pos].type != TK_SEMICOLON) {
         TokenType kind = tokens->tokens[*pos].type;
+        if (kind == TK_LBRACE && *pos > begin && tokens->tokens[*pos-1].type == TK_IDENT) {
+            *pos = matching_close(tokens, *pos, (int)tokens->count) + 1; continue;
+        }
         if (kind == TK_EOF || kind == TK_LBRACE || kind == TK_RBRACE) {
             parse_error(tokens, *pos, "expected ';' after return");
         }
@@ -714,7 +878,7 @@ Statement* parse_block(TokenArray* tokens, int *pos){
     statement->data.block.statements = malloc(sizeof(Statement*) * tokens->count);
     (*pos)++;// Skip the opening brace
     while(((size_t)*pos < tokens->count) && (tokens->tokens[*pos].type != TK_RBRACE)){
-        if(tokens->tokens[*pos].type == TK_IDENT || tokens->tokens[*pos].type == TK_INC || tokens->tokens[*pos].type == TK_DEC){
+        if(!declaration_start(tokens, *pos) && (tokens->tokens[*pos].type == TK_IDENT || tokens->tokens[*pos].type == TK_INC || tokens->tokens[*pos].type == TK_DEC)){
             statement->data.block.statements[statement->data.block.count++] = parse_assign_statement(tokens, pos);
         }
         else if(tokens->tokens[*pos].type == TK_BREAK){
@@ -726,7 +890,7 @@ Statement* parse_block(TokenArray* tokens, int *pos){
         else if(tokens->tokens[*pos].type == TK_FN){
             parse_error(tokens, *pos, "function definitions must be top-level");
         }
-        else if((tokens->tokens[*pos].type == TK_LET || tokens->tokens[*pos].type == TK_INT)){
+        else if(declaration_start(tokens, *pos)){
             statement->data.block.statements[statement->data.block.count++] = parse_let_statement(tokens, pos);
         }
         else if(tokens->tokens[*pos].type == TK_PRINT){
@@ -778,7 +942,7 @@ Statement* parse_print_statement(TokenArray* tokens, int *pos){
             parse_error(tokens, *pos, "Expected ';' at the end of print statement");
         }
         else if(tokens->tokens[*pos].type == TK_LBRACE){
-            parse_error(tokens, *pos, "Expected ';' at the end of print statement");
+            *pos = matching_close(tokens, *pos, (int)tokens->count) + 1; continue;
         }
         (*pos)++;
     }
@@ -802,24 +966,26 @@ static ValueType parse_type(TokenArray *tokens, int *pos, int end, bool allow_vo
     }
     Token *token = &tokens->tokens[(*pos)++];
     if (strcmp(token->text, "void") == 0 && allow_void) return VALUE_VOID;
-    if (strcmp(token->text, "int") != 0) error_at(token, "unknown or invalid type '%s'", token->text);
-    ValueType type = VALUE_INT;
+    ValueType type = named_type(tokens->program, token->text);
+    if (type == VALUE_VOID) error_at(token, "unknown or invalid type '%s'", token->text);
     while (*pos < end && tokens->tokens[*pos].type == TK_LBRACKET) {
         (*pos)++;
         if (*pos >= end || tokens->tokens[*pos].type != TK_RBRACKET) {
             parse_error(tokens, *pos, "expected ']' in array type");
         }
         (*pos)++;
+        if (type_rank(type) == TYPE_STRIDE - 1) parse_error(tokens, *pos, "too many vector dimensions");
         type++;
     }
     return type;
 }
 
-static Function *parse_function(TokenArray *tokens, int *pos) {
+static Function *parse_function(TokenArray *tokens, int *pos, ValueType owner) {
     Function *function = calloc(1, sizeof(*function));
     if (!function) error_at(NULL, "out of memory");
     function->token = &tokens->tokens[*pos];
-    function->return_type = VALUE_INT;
+    function->owner = owner;
+    function->return_type = owner ? VALUE_VOID : VALUE_INT;
     (*pos)++;
     if ((size_t)*pos >= tokens->count || tokens->tokens[*pos].type != TK_IDENT) {
         parse_error(tokens, *pos, "expected function name");
@@ -830,10 +996,11 @@ static Function *parse_function(TokenArray *tokens, int *pos) {
     }
     int close = matching_close(tokens, *pos, (int)tokens->count);
     (*pos)++;
-    if (*pos < close) {
-        function->params = calloc((size_t)(close - *pos), sizeof(Parameter));
+    if (*pos < close || owner) {
+        function->params = calloc((size_t)(close - *pos) + 1, sizeof(Parameter));
         if (!function->params) error_at(NULL, "out of memory");
     }
+    if (owner) function->params[function->count++] = (Parameter){.name="self", .token=function->token, .type=owner, .by_ref=true};
     while (*pos < close) {
         if (tokens->tokens[*pos].type != TK_IDENT) parse_error(tokens, *pos, "expected parameter name");
         Parameter *param = &function->params[function->count++];
@@ -862,9 +1029,60 @@ static Function *parse_function(TokenArray *tokens, int *pos) {
     return function;
 }
 
+static void add_function(TokenArray *tokens, int *pos, ValueType owner) {
+    Program *p = tokens->program;
+    if (!p->functions) {
+        p->functions = calloc(tokens->count, sizeof(Function *));
+        if (!p->functions) error_at(NULL, "out of memory");
+    }
+    Function *f = parse_function(tokens, pos, owner);
+    f->id = p->function_count;
+    p->functions[p->function_count++] = f;
+}
+
+static void parse_record(TokenArray *tokens, int *pos) {
+    Program *p = tokens->program;
+    ++*pos;
+    Token *name = &tokens->tokens[*pos];
+    if (name->type != TK_IDENT || !strcmp(name->text, "void") || !strcmp(name->text, "struct") || named_type(p, name->text) != VALUE_VOID)
+        parse_error(tokens, *pos, "expected a new structure name");
+    if (p->record_count >= 32760) parse_error(tokens, *pos, "too many structure types");
+    ++*pos;
+    if (tokens->tokens[*pos].type != TK_LBRACE) parse_error(tokens, *pos, "expected '{'");
+    ++*pos;
+    size_t id = p->record_count++;
+    p->records = realloc(p->records, p->record_count * sizeof(Record));
+    if (!p->records) error_at(NULL, "out of memory");
+    Record *record = &p->records[id];
+    *record = (Record){.name = name->text};
+    ValueType owner = VALUE_RECORD + (int)id * TYPE_STRIDE;
+    while (tokens->tokens[*pos].type != TK_RBRACE) {
+        if (tokens->tokens[*pos].type == TK_FN) {
+            add_function(tokens, pos, owner);
+            continue;
+        }
+        ValueType type = parse_type(tokens, pos, (int)tokens->count, false);
+        if (type == owner) parse_error(tokens, *pos, "recursive field requires a vector");
+        Token *field = &tokens->tokens[*pos];
+        if (field->type != TK_IDENT) parse_error(tokens, *pos, "expected field name");
+        for (size_t i = 0; i < record->count; ++i)
+            if (!strcmp(field->text, record->fields[i].name)) parse_error(tokens, *pos, "duplicate field");
+        ++*pos;
+        if (tokens->tokens[*pos].type != TK_SEMICOLON) parse_error(tokens, *pos, "expected ';' after field");
+        ++*pos;
+        record->fields = realloc(record->fields, (record->count + 1) * sizeof(Field));
+        if (!record->fields) error_at(NULL, "out of memory");
+        record->fields[record->count++] = (Field){field->text, type};
+    }
+    ++*pos;
+    if (tokens->tokens[*pos].type == TK_SEMICOLON) ++*pos;
+
+}
+
 Program* parse(TokenArray* tokens){
     Program* program = calloc(1, sizeof(Program));
     if (!program) error_at(NULL, "out of memory");
+    tokens->program = program;
     program->statesments = malloc(sizeof(Statement*) * tokens->count);
     program->count = 0;
     program->capacity =tokens->count;
@@ -872,14 +1090,10 @@ Program* parse(TokenArray* tokens){
     int pos = 0;
 
     while((size_t)pos < tokens->count){
-        if(tokens->tokens[pos].type == TK_FN){
-            if (!program->functions) {
-                program->functions = calloc(tokens->count, sizeof(Function *));
-                if (!program->functions) error_at(NULL, "out of memory");
-            }
-            Function *function = parse_function(tokens, &pos);
-            function->id = program->function_count;
-            program->functions[program->function_count++] = function;
+        if(tokens->tokens[pos].type == TK_IDENT && !strcmp(tokens->tokens[pos].text, "struct")) {
+            parse_record(tokens, &pos);
+        } else if(tokens->tokens[pos].type == TK_FN){
+            add_function(tokens, &pos, 0);
         }
         else if(tokens->tokens[pos].type == TK_RETURN){
             program->statesments[program->count++] = parse_return_statement(tokens, &pos);
@@ -902,7 +1116,7 @@ Program* parse(TokenArray* tokens){
         else if(tokens->tokens[pos].type == TK_BREAK){
             program->statesments[program->count++] = parse_break_statement(tokens, &pos);
         }
-        else if(tokens->tokens[pos].type == TK_LET || tokens->tokens[pos].type == TK_INT){
+        else if(declaration_start(tokens, pos)){
             program->statesments[program->count++] = parse_let_statement(tokens, &pos);
         }
         else if(tokens->tokens[pos].type == TK_IDENT || tokens->tokens[pos].type == TK_INC || tokens->tokens[pos].type == TK_DEC){

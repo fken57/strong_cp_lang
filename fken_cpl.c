@@ -4,6 +4,7 @@
 #include "parser.c"
 #include "analyze.c"
 #include "generate_cpp.c"
+#include "generate_plan.c"
 
 static void destroy_expr(Expr *expr) {
     if (!expr) return;
@@ -22,6 +23,11 @@ static void destroy_expr(Expr *expr) {
     } else if (expr->type == EXPR_CONSTRUCT) {
         for (size_t i = 0; i < expr->data.construct.count; i++) destroy_expr(expr->data.construct.sizes[i]);
         free(expr->data.construct.sizes);
+    } else if (expr->type == EXPR_RECORD) {
+        for (size_t i = 0; i < expr->data.record.count; ++i) destroy_expr(expr->data.record.values[i]);
+        free(expr->data.record.indices); free(expr->data.record.values);
+    } else if (expr->type == EXPR_FIELD) {
+        destroy_expr(expr->data.field.owner);
     } else if (expr->type == EXPR_INDEX) {
         destroy_expr(expr->data.index.array);
         destroy_expr(expr->data.index.index);
@@ -41,9 +47,11 @@ static void destroy_statement(Statement *stmt) {
             destroy_expr(stmt->data.assign.target);
             destroy_expr(stmt->data.assign.value);
             break;
+        case STMT_WRITE: destroy_expr(stmt->data.write.value); break;
         case STMT_PRINT: destroy_expr(stmt->data.print.expression); break;
         case STMT_EXPR: destroy_expr(stmt->data.expr.expression); break;
         case STMT_RETURN: destroy_expr(stmt->data.return_stmt.value); break;
+        case STMT_DECLARATIONS:
         case STMT_BLOCK:
             for (size_t i = 0; i < stmt->data.block.count; i++) {
                 destroy_statement(stmt->data.block.statements[i]);
@@ -59,6 +67,8 @@ static void destroy_statement(Statement *stmt) {
             destroy_expr(stmt->data.while_stmt.condition);
             destroy_statement(stmt->data.while_stmt.body);
             break;
+        case STMT_EACH:
+            destroy_expr(stmt->data.each.values); destroy_statement(stmt->data.each.body); break;
         case STMT_FOR:
             destroy_statement(stmt->data.for_stmt.init);
             destroy_expr(stmt->data.for_stmt.condition);
@@ -90,10 +100,11 @@ static Source read_source(FILE *file) {
 }
 
 int main(int argc, char **argv) {
-    bool check = false, token_mode = false;
+    bool plan = false, check = false, token_mode = false;
     const char *path = NULL, *code = NULL;
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--check") == 0) check = true;
+        else if (strcmp(argv[i], "--plan") == 0) plan = true;
         else if (strcmp(argv[i], "--tokens") == 0) token_mode = true;
         else if (strcmp(argv[i], "--json-diagnostics") == 0) diagnostic_json = true;
         else if (strcmp(argv[i], "--code") == 0 && i + 1 < argc) code = argv[++i];
@@ -138,7 +149,8 @@ int main(int argc, char **argv) {
     }
     Program *program = parse(tokens);
     analyze(program);
-    if (!check) generate_cpp(program);
+    if (plan) generate_plan(program);
+    else if (!check) generate_cpp(program);
     for (size_t i = 0; i < program->count; i++) destroy_statement(program->statesments[i]);
     free(program->statesments);
     for (size_t i = 0; i < program->function_count; i++) {
@@ -148,6 +160,8 @@ int main(int argc, char **argv) {
         free(function);
     }
     free(program->functions);
+    for (size_t i = 0; i < program->record_count; ++i) free(program->records[i].fields);
+    free(program->records);
     free(program);
     for (size_t i = 0; i < tokens->count; i++) free(tokens->tokens[i].text);
     free(tokens->tokens);

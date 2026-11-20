@@ -11,7 +11,7 @@ ROOT = Path(__file__).resolve().parent
 BUILD = Path(os.environ.get("FKEN_BUILD_DIR", ROOT / ".build"))
 SOURCES = (
     "fken_cpl.c", "typedef.c", "util.c", "lex.c", "parser.c", "analyze.c",
-    "generate_cpp.c", "runtime.hpp",
+    "generate_cpp.c", "generate_plan.c", "runtime.hpp",
 )
 
 

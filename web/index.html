@@ -48,11 +48,19 @@
         <footer class="pane-footer"><span><span class="language-dot cpp"></span>C++20</span><span id="output-size">—</span><span>GCC / Clang</span></footer>
       </article>
     </section>
+    <section class="diagnostics run-panel" aria-labelledby="run-title">
+      <header><h2 id="run-title">実行</h2><button id="run" class="primary">▶ 実行</button></header>
+      <div class="run-io">
+        <label>標準入力<textarea id="stdin" rows="4" spellcheck="false" placeholder="入力例: 3 10 20 30"></textarea></label>
+        <div>標準出力<pre id="stdout" tabindex="0"></pre></div>
+      </div>
+      <p id="run-status" role="status" aria-live="polite"></p>
+    </section>
     <section class="diagnostics" aria-labelledby="diagnostics-title">
       <header><h2 id="diagnostics-title">診断 <span id="diagnostic-count">0</span></h2><div id="analysis-state" role="status" aria-live="polite"><i></i>解析を準備しています</div></header>
       <div id="diagnostic-list" class="diagnostic-list"><div class="diagnostic-empty"><span class="check-circle">✓</span>コードの変更に合わせて、自動でチェックします。</div></div>
     </section>
-    <footer class="workspace-footer"><span>fken_cpl <span id="version">v0.6.0</span></span><span>補完 <kbd>Ctrl Space</kbd><span class="footer-separator">·</span> 変換 <kbd>Ctrl Enter</kbd></span><span>あなたの考察を、そのまま。</span></footer>
+    <footer class="workspace-footer"><span>fken_cpl <span id="version">v0.7.0</span></span><span>補完 <kbd>Ctrl Space</kbd><span class="footer-separator">·</span> 変換 <kbd>Ctrl Enter</kbd></span><span>あなたの考察を、そのまま。</span></footer>
   </main>
   <div id="toast" role="status" aria-live="polite" hidden></div>
   <dialog id="guide"><button id="guide-close" class="quiet close-button" aria-label="使い方を閉じる">×</button><p class="eyebrow">QUICK START</p><h2>書く。確かめる。C++ へ。</h2><p>入力中のコードは自動で解析され、エラーの位置に下線が表示されます。診断をクリックすると、その位置に移動します。</p><p><kbd>Ctrl Space</kbd> で補完を開き、<kbd>↑ ↓</kbd> で候補を選んで <kbd>Tab</kbd> または <kbd>Enter</kbd> で挿入します。テンプレートの入力箇所は <kbd>Tab</kbd> で移動できます。</p><pre>let n = read_int();

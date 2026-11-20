@@ -10,3 +10,9 @@ main{max-width:1640px;padding:31px 40px 12px;margin:0 auto}.workspace-heading{di
 @media(min-width:1600px){.code-text,.gutter pre{font-size:13px;line-height:24px}.editors{height:60vh}}
 @media(max-width:850px){.topbar{padding:0 20px;height:65px}.topbar .divider,.workspace-label{display:none}main{padding:25px 18px 10px}.workspace-heading{margin-bottom:20px}.heading-badge{display:none}h1{font-size:21px}.editors{grid-template-columns:1fr;height:auto;max-height:none}.editor-pane{height:420px}.output-pane{height:330px}.workspace-footer>span:last-child{display:none}.top-actions{gap:12px}.toolbar{flex-wrap:wrap}.save-state{display:none}.primary{padding:9px 12px}.primary kbd{display:none}.sample-label{gap:7px}select{min-width:140px}.pane-header .quiet kbd{display:none}}
 @media(prefers-reduced-motion:reduce){*,*:before,*:after{animation:none!important;transition:none!important}}
+
+.run-io { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1rem; padding: 1rem; }
+.run-io textarea, .run-io pre { display: block; box-sizing: border-box; width: 100%; margin: .4rem 0 0; min-height: 6rem; max-height: 18rem; overflow: auto; padding: .6rem; color: inherit; background: #10171b; border: 1px solid #374149; border-radius: .4rem; font: 14px/1.5 monospace; }
+.run-io textarea { resize: vertical; }
+#run-status { margin: 0 1rem .75rem; }
+@media (max-width: 640px) { .run-io { grid-template-columns: 1fr; } }

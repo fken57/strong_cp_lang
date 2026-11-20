@@ -11,6 +11,12 @@ MAX_SOURCE_BYTES = 256 * 1024
 TIMEOUT_SECONDS = 2
 
 CATALOG = {
+    "struct": (15, "struct Name { ... }", "struct ${1:Point} {\n    int ${2:x};\n}", "フィールドとメソッドを定義します。"),
+    "graph": (14, "graph G(n);", "graph ${1:G}(${2:n});", "無向グラフを作成します。"),
+    "digraph": (14, "digraph D(n);", "digraph ${1:D}(${2:n});", "有向グラフを作成します。"),
+    "edge": (14, "edge", "edge", "辺の to、cost、id を持つ値です。"),
+    "cin": (14, "cin >> value;", "cin >> ${1:value};", "整数を読み込みます。"),
+    "cout": (14, "cout << value;", "cout << ${1:value};", "整数を出力します。"),
     "read_int": (3, "read_int() -> int", "read_int()", "空白区切りの整数を一つ読みます。64bit を超える値は自動昇格します。"),
     "read_vec": (3, "read_vec(n: int) -> int[]", "read_vec(${1:n})", "整数を n 個読み、配列にします。"),
     "array": (3, "array(n: int, value: int = 0) -> int[]", "array(${1:n})", "長さ n の整数配列を作ります。第2引数で初期値を指定できます。"),
@@ -140,11 +146,55 @@ class DocumentIndex:
             if token["kind"] == "TK_LBRACE":
                 close = self.pairs.get(i)
                 self.blocks.append((token["start"], tokens[close]["start"] if close is not None else eof))
+        self.method_scopes = {}
+        self.members = {"graph": {}, "edge": {}}
+        for name, args in (("add", "u, v, cost = 1"), ("size", ""), ("edge_count", "")):
+            insert = "add(${1:u}, ${2:v})" if name == "add" else name + "()"
+            self.members["graph"][name] = self.member(name, 2, f"{name}({args}) -> int", insert, "int")
+        self.members["digraph"] = self.members["graph"]
+        for name in ("to", "cost", "id"):
+            self.members["edge"][name] = self.member(name, 5, "int " + name, name, "int")
+        for i in range(len(tokens)-2):
+            if tokens[i]["text"] != "struct" or tokens[i+2]["kind"] != "TK_LBRACE":
+                continue
+            members = self.members.setdefault(tokens[i+1]["text"], {})
+            j, limit = i+3, self.pairs.get(i+2, len(tokens))
+            while j+1 < limit:
+                if tokens[j]["kind"] == "TK_FN":
+                    name = tokens[j+1]["text"]
+                    close = self.pairs.get(j+2)
+                    if close is None: break
+                    detail = source[tokens[j]["start"]:tokens[close]["end"]]
+                    k, result = close+1, "void"
+                    if k+1 < limit and tokens[k]["kind"] == "TK_ARROW":
+                        result = tokens[k+1]["text"]
+                        k += 2
+                        while k+1 < limit and tokens[k]["text"] == "[" and tokens[k+1]["text"] == "]":
+                            result += "[]"
+                            k += 2
+                    args = [tokens[q]["text"] for q in range(j+3, close)
+                            if q == j+3 or tokens[q-1]["text"] == ","]
+                    insert = name + "(" + ", ".join("${%d:%s}" % (n+1, arg) for n, arg in enumerate(args)) + ")"
+                    members[name] = self.member(name, 2, detail + " -> " + result, insert, result)
+                    if k < len(tokens) and tokens[k]["kind"] == "TK_LBRACE":
+                        self.method_scopes[tokens[j]["start"]] = tokens[i+1]["text"]
+                    if k not in self.pairs: break
+                    j = self.pairs[k]+1
+                else:
+                    result = tokens[j]["text"]
+                    j += 1
+                    while j+1 < limit and tokens[j]["text"] == "[" and tokens[j+1]["text"] == "]":
+                        result += "[]"
+                        j += 2
+                    if j >= limit or tokens[j]["kind"] != "TK_IDENT": break
+                    name = tokens[j]["text"]
+                    members[name] = self.member(name, 5, result + " " + name, name, result)
+                    j += 2
         self.functions = []
         for i, token in enumerate(tokens):
             if token["kind"] != "TK_FN" or i + 2 >= len(tokens):
                 continue
-            if any(start < token["start"] < end for start, end in self.blocks[1:]):
+            if token["start"] not in self.method_scopes and any(start < token["start"] < end for start, end in self.blocks[1:]):
                 continue
             name, opening = tokens[i + 1], i + 2
             if name["kind"] != "TK_IDENT" or tokens[opening]["kind"] != "TK_LPAREN":
@@ -172,7 +222,7 @@ class DocumentIndex:
                 if j >= close or tokens[j]["kind"] != "TK_COMMA":
                     break
                 j += 1
-            j, return_type = close + 1, "int"
+            j, return_type = close + 1, "void" if token["start"] in self.method_scopes else "int"
             if j < len(tokens) and tokens[j]["kind"] == "TK_ARROW":
                 j += 1
                 if j < len(tokens):
@@ -193,7 +243,10 @@ class DocumentIndex:
         for function in self.functions:
             if function["body"]:
                 start, end = function["body"]
-                for param in function["params"]:
+                params = function["params"]
+                if function["owner"] in self.method_scopes:
+                    params = [*params, {"name": "self", "type": self.method_scopes[function["owner"]]}]
+                for param in params:
                     self.variables.append({"name": param["name"], "type": param["type"],
                                            "start": start, "end": end, "visible": start,
                                            "owner": function["owner"], "scope": start})
@@ -217,10 +270,10 @@ class DocumentIndex:
                                        "visible": start, "scope": start, "owner": self.owner(token["start"])})
         self.loop_ranges = [(tokens[close]["end"], end) for _, close, end in loops]
         for i, token in enumerate(tokens):
-            if token["kind"] not in ("TK_LET", "TK_INT"):
+            if token["kind"] not in ("TK_LET", "TK_INT") and token["text"] not in self.members:
                 continue
-            j, declared_type = i + 1, "int"
-            if token["kind"] == "TK_INT":
+            j, declared_type = i + 1, token["text"]
+            if token["kind"] != "TK_LET":
                 while j + 1 < len(tokens) and tokens[j]["kind"] == "TK_LBRACKET" and tokens[j + 1]["kind"] == "TK_RBRACKET":
                     declared_type += "[]"
                     j += 2
@@ -231,13 +284,20 @@ class DocumentIndex:
             for opened, close, end in loops:
                 if opened < i < close:
                     scope = (tokens[opened]["start"], end)
+            if value_start < len(tokens) and tokens[value_start]["text"] == ":" and any(a < i < b for a,b,_ in loops):
+                self.variables.append({"name": name, "type": declared_type, "start": scope[0], "end": scope[1],
+                                       "visible": tokens[j]["end"], "owner": self.owner(token["start"]), "scope": scope[0]})
+                continue
             semi_index = next((j for j in range(value_start, len(tokens)) if tokens[j]["kind"] in
                                ("TK_SEMICOLON", "TK_LBRACE", "TK_RBRACE")), None)
+            while semi_index in self.pairs and tokens[semi_index]["kind"] == "TK_LBRACE":
+                semi_index = self.pairs[semi_index] + 1
+                if semi_index >= len(tokens): semi_index = None
             if semi_index is None or tokens[semi_index]["kind"] != "TK_SEMICOLON":
                 continue
             semicolon = tokens[semi_index]
             owner = self.owner(token["start"])
-            if token["kind"] == "TK_INT":
+            if token["kind"] != "TK_LET":
                 value_type = declared_type
             elif value_start < semi_index and tokens[value_start]["kind"] == "TK_ASSIGN":
                 value_type = self.infer_type(value_start + 1, semi_index, token["start"])
@@ -246,6 +306,16 @@ class DocumentIndex:
             if value_type != "void":
                 self.variables.append({"name": name, "type": value_type, "start": scope[0], "end": scope[1],
                                        "visible": semicolon["end"], "owner": owner, "scope": scope[0]})
+
+    @staticmethod
+    def member(name, kind, detail, insert, result):
+        return {"label": name, "kind": kind, "detail": detail, "insert": insert,
+                "documentation": detail, "priority": "0", "result": result}
+
+    def member_items(self, receiver):
+        if receiver in self.members:
+            return {k: v.copy() for k, v in self.members[receiver].items()}
+        return method_items(receiver)
 
     def expression_start(self, end):
         if end <= 0:
@@ -299,18 +369,23 @@ class DocumentIndex:
                 result = self.visible(offset).get(value["text"], {}).get("type", "int")
         while pos < end:
             if tokens[pos]["kind"] == "TK_LBRACKET" and pos in self.pairs:
-                result = result[:-2] if result.endswith("[]") else "int"
+                result = "edge[]" if result in ("graph", "digraph") else result[:-2] if result.endswith("[]") else "int"
                 pos = self.pairs[pos] + 1
             elif (tokens[pos]["kind"] == "TK_DOT" and pos + 2 < end and
                   tokens[pos + 2]["kind"] == "TK_LPAREN" and pos + 2 in self.pairs):
                 method = tokens[pos + 1]["text"]
-                if method in ("pop", "back"):
+                if method in self.members.get(result, {}):
+                    result = self.members[result][method]["result"]
+                elif method in ("pop", "back"):
                     result = result[:-2] if result.endswith("[]") else "int"
                 elif method == "size":
                     result = "int"
                 else:
                     result = "void"
                 pos = self.pairs[pos + 2] + 1
+            elif tokens[pos]["kind"] == "TK_DOT" and pos+1 < end:
+                result = self.members.get(result, {}).get(tokens[pos+1]["text"], {}).get("result", "int")
+                pos += 2
             else:
                 return "int"
         return result
@@ -378,6 +453,11 @@ class LanguageService:
         result = self._run(source, "--tokens")
         return DocumentIndex(source, json.loads(result["output"]) if result["ok"] else [])
 
+    def execution_plan(self, source):
+        result = self._run(source, "--plan")
+        return {"plan": json.loads(result["output"]) if result["ok"] else None,
+                "diagnostics": result["diagnostics"]}
+
     def compile(self, source):
         result = self._run(source, None)
         return {"cpp": result.get("output", "") if result["ok"] else "",
@@ -406,7 +486,11 @@ class LanguageService:
                 continue
             items[name] = {"label": name, "kind": kind, "detail": detail, "insert": insert,
                            "documentation": doc, "priority": "3" if name == "let" else "2"}
+        for name in index.members.keys() - {"graph", "digraph", "edge"}:
+            items[name] = {"label": name, "kind": 22, "detail": "struct " + name, "insert": name,
+                           "documentation": "ユーザー定義構造体", "priority": "1"}
         for function in index.functions:
+            if function["owner"] in index.method_scopes: continue
             params = ", ".join("${" + str(i + 1) + ":" + p["name"] + "}" for i, p in enumerate(function["params"]))
             items[function["name"]] = {"label": function["name"], "kind": 3, "detail": function["detail"],
                                       "insert": function["name"] + "(" + params + ")",
@@ -416,7 +500,7 @@ class LanguageService:
                            "insert": name, "documentation": "この位置で参照できる変数です。", "priority": "0"}
         before = [i for i, token in enumerate(index.tokens) if token["end"] <= start]
         if before and index.tokens[before[-1]]["kind"] == "TK_DOT":
-            items = method_items(index.receiver_type(before[-1], offset))
+            items = index.member_items(index.receiver_type(before[-1], offset))
         result = []
         for name, item in items.items():
             if not name.lower().startswith(prefix):
@@ -450,7 +534,7 @@ class LanguageService:
             value = next((f["detail"] for f in index.functions if f["name"] == name), None)
         token_index = next((i for i, token in enumerate(index.tokens) if token["start"] == start), None)
         if token_index and index.tokens[token_index - 1]["kind"] == "TK_DOT":
-            methods = method_items(index.receiver_type(token_index - 1, offset))
+            methods = index.member_items(index.receiver_type(token_index - 1, offset))
             method = methods.get(name)
             value = method["detail"] + "\n\n" + method["documentation"] if method else None
         if value is None:

@@ -8,7 +8,7 @@ server = extension / "server"
 server.mkdir(exist_ok=True)
 for name in (
     "compiler.py", "language_service.py", "lsp_server.py", "fken_cpl.c",
-    "typedef.c", "util.c", "lex.c", "parser.c", "analyze.c", "generate_cpp.c", "runtime.hpp",
+    "typedef.c", "util.c", "lex.c", "parser.c", "analyze.c", "generate_cpp.c", "generate_plan.c", "runtime.hpp",
 ):
     shutil.copyfile(root / name, server / name)
 (root / ".build").mkdir(exist_ok=True)

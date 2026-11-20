@@ -48,12 +48,16 @@ _Noreturn void error_at(const Token *token, const char *format, ...) {
 }
 
 static const Expr *lvalue_root(const Expr *expr) {
-    while (expr && expr->type == EXPR_INDEX) expr = expr->data.index.array;
+    while (expr && (expr->type == EXPR_INDEX || expr->type == EXPR_FIELD))
+        expr = expr->type == EXPR_FIELD ? expr->data.field.owner : expr->data.index.array;
     return expr && expr->type == EXPR_VARIABLE ? expr : NULL;
 }
 
 const char *token_type_name(TokenType type) {
     switch (type) {
+        case TK_INSERT: return "TK_INSERT";
+        case TK_EXTRACT: return "TK_EXTRACT";
+        case TK_CHAR: return "TK_CHAR";
         case TK_NUMBER: return "TK_NUMBER";
         case TK_IDENT:  return "TK_IDENT";
         case TK_INT: return "TK_INT";

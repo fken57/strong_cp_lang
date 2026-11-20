@@ -10,22 +10,49 @@ static const char *cpp_type(ValueType type) {
     if (type == VALUE_INT) return "fken::Int";
     if (type == VALUE_ARRAY) return "fken::Array";
     static char name[64];
-    snprintf(name, sizeof(name), "fken::Vec<%d>", type);
+    char element[40];
+    switch (type_base(type)) {
+        case VALUE_INT: strcpy(element, "fken::Int"); break;
+        case VALUE_EDGE: strcpy(element, "fken::Edge"); break;
+        case VALUE_GRAPH: strcpy(element, "fken::Graph<false>"); break;
+        case VALUE_DIGRAPH: strcpy(element, "fken::Graph<true>"); break;
+        default: snprintf(element, sizeof(element), "fken_record%d", (type_base(type)-VALUE_RECORD)/TYPE_STRIDE);
+    }
+    if (type_rank(type)) snprintf(name, sizeof(name), "fken::Vec<%d,%s>", type_rank(type), element);
+    else snprintf(name, sizeof(name), "%s", element);
     return name;
 }
 
 static void cpp_expr(const Expr *expr);
 
+static const Function *current_function;
+
+static void cpp_variable(const Expr *target) {
+    printf("fken_v%d", -target->data.variable.offset);
+    if (current_function) {
+        for (size_t i = 0; i < current_function->count; ++i) {
+            const Parameter *p = &current_function->params[i];
+            if (p->by_ref && p->offset == target->data.variable.offset) { fputs("()", stdout); break; }
+        }
+    }
+}
+
 static void cpp_path(const Expr *target, size_t count) {
-    const Expr *root = lvalue_root(target);
-    fputs("fken::at_path(", stdout);
-    printf("fken_v%d", -root->data.variable.offset);
-    for (size_t i = 0; i < count; i++) printf(", fken_index%zu", i);
-    putchar(')');
+    if (target->type == EXPR_VARIABLE) { cpp_variable(target); return; }
+    if (target->type == EXPR_FIELD) {
+        cpp_path(target->data.field.owner, count);
+        if (target->data.field.owner->value_type == VALUE_EDGE) printf(".%s", target->data.field.name);
+        else printf(".f%zu", target->data.field.index);
+        return;
+    }
+    fputs("fken::at(", stdout);
+    cpp_path(target->data.index.array, count - 1);
+    printf(", fken_index%zu)", count - 1);
 }
 
 static size_t cpp_capture_path(const Expr *target) {
     if (target->type == EXPR_VARIABLE) return 0;
+    if (target->type == EXPR_FIELD) return cpp_capture_path(target->data.field.owner);
     size_t count = cpp_capture_path(target->data.index.array);
     printf("fken::Int fken_index%zu = ", count);
     cpp_expr(target->data.index.index);
@@ -34,6 +61,19 @@ static size_t cpp_capture_path(const Expr *target) {
     cpp_path(target, count + 1);
     fputs("; ", stdout);
     return count + 1;
+}
+
+// Reference parameters may forward self, whose containing vector can reallocate.
+static void cpp_argument(const Expr *arg, bool reference) {
+    if (reference) printf("[&]() -> %s& { return ", cpp_type(arg->value_type));
+    cpp_expr(arg);
+    if (reference) fputs("; }", stdout);
+}
+
+static void cpp_capture_arg(const Expr *arg, size_t i, bool reference) {
+    printf("%s fken_arg%zu = ", reference ? "auto" : cpp_type(arg->value_type), i);
+    cpp_argument(arg, reference);
+    fputs("; ", stdout);
 }
 
 static void cpp_method(const Expr *expr) {
@@ -47,14 +87,28 @@ static void cpp_method(const Expr *expr) {
         fputs("; ", stdout);
     }
     for (size_t i = 0; i < expr->data.call.count; i++) {
-        printf("%s fken_arg%zu = ", cpp_type(expr->data.call.args[i]->value_type), i);
-        cpp_expr(expr->data.call.args[i]);
-        fputs("; ", stdout);
+        bool ref = expr->data.call.function && expr->data.call.function->params[i+1].by_ref;
+        cpp_capture_arg(expr->data.call.args[i], i, ref);
     }
-    printf("return fken::%s(", expr->data.call.name);
+    if (expr->data.call.function) {
+        // Resolve self each time: a method can resize the vector containing its receiver.
+        const Function *f = expr->data.call.function;
+        printf("return fken_fn%zu([&]() -> %s& { return ", f->id, cpp_type(receiver->value_type));
+        if (lvalue_root(receiver)) cpp_path(receiver, path_length);
+        else fputs("fken_receiver", stdout);
+        fputs("; }", stdout);
+        for (size_t i = 0; i < expr->data.call.count; ++i) printf(", fken_arg%zu", i);
+        fputs("); }())", stdout);
+        return;
+    }
+    bool graph = graph_type(receiver->value_type);
+    if (graph) fputs("return ", stdout);
+    else printf("return fken::%s(", expr->data.call.name);
     if (lvalue_root(receiver)) cpp_path(receiver, path_length);
     else fputs("fken_receiver", stdout);
-    for (size_t i = 0; i < expr->data.call.count; i++) printf(", std::move(fken_arg%zu)", i);
+    if (graph) printf(".%s(", expr->data.call.name);
+    for (size_t i = 0; i < expr->data.call.count; i++)
+        printf("%sstd::move(fken_arg%zu)", graph && i == 0 ? "" : ", ", i);
     fputs("); }())", stdout);
 }
 
@@ -72,7 +126,7 @@ static void cpp_expr(const Expr *expr) {
             break;
         }
         case EXPR_VARIABLE:
-            printf("fken_v%d", -expr->data.variable.offset);
+            cpp_variable(expr);
             break;
         case EXPR_UNARY:
             fputs("(-", stdout);
@@ -109,10 +163,7 @@ static void cpp_expr(const Expr *expr) {
                 printf("([&]() -> %s { ", cpp_type(expr->value_type));
                 for (size_t i = 0; i < count; i++) {
                     bool by_ref = function && function->params[i].by_ref;
-                    printf("%s %sfken_arg%zu = ", cpp_type(expr->data.call.args[i]->value_type),
-                           by_ref ? "&" : "", i);
-                    cpp_expr(expr->data.call.args[i]);
-                    fputs("; ", stdout);
+                    cpp_capture_arg(expr->data.call.args[i], i, by_ref);
                 }
                 fputs("return ", stdout);
             }
@@ -124,7 +175,7 @@ static void cpp_expr(const Expr *expr) {
                     if (function && function->params[i].by_ref) printf("fken_arg%zu", i);
                     else printf("std::move(fken_arg%zu)", i);
                 } else {
-                    cpp_expr(expr->data.call.args[i]);
+                    cpp_argument(expr->data.call.args[i], function && function->params[i].by_ref);
                 }
             }
             putchar(')');
@@ -139,7 +190,23 @@ static void cpp_expr(const Expr *expr) {
             }
             putchar('}');
             break;
+        case EXPR_RECORD:
+            printf("([&]() { %s fken_record{}; ", cpp_type(expr->value_type));
+            for (size_t i = 0; i < expr->data.record.count; ++i) {
+                printf("fken_record.f%zu = ", expr->data.record.indices[i]);
+                cpp_expr(expr->data.record.values[i]); fputs("; ", stdout);
+            }
+            fputs("return fken_record; }())", stdout); break;
+        case EXPR_FIELD:
+            putchar('('); cpp_expr(expr->data.field.owner); putchar(')');
+            if (expr->data.field.owner->value_type == VALUE_EDGE) printf(".%s", expr->data.field.name);
+            else printf(".f%zu", expr->data.field.index);
+            break;
         case EXPR_CONSTRUCT:
+            if (graph_type(expr->value_type)) {
+                printf("%s(", cpp_type(expr->value_type)); cpp_expr(expr->data.construct.sizes[0]); putchar(')');
+                break;
+            }
             if (!expr->data.construct.count) { printf("%s{}", cpp_type(expr->value_type)); break; }
             fputs("([&]() { ", stdout);
             for (size_t i = 0; i < expr->data.construct.count; i++) {
@@ -147,7 +214,7 @@ static void cpp_expr(const Expr *expr) {
                 cpp_expr(expr->data.construct.sizes[i]);
                 fputs(").to_size(\"array size\"); ", stdout);
             }
-            printf("return fken::make_vec<%d>({", expr->value_type);
+            printf("return fken::make_vec<%d,%s>({", type_rank(expr->value_type), cpp_type(type_base(expr->value_type)));
             for (size_t i = 0; i < expr->data.construct.count; i++) printf("%sfken_size%zu", i ? ", " : "", i);
             fputs("}); }())", stdout);
             break;
@@ -222,10 +289,18 @@ static void cpp_statement(const Statement *stmt) {
             }
             fputs(";\n", stdout);
             break;
+        case STMT_WRITE:
+            if (stmt->data.write.value) {
+                fputs("std::cout << ", stdout); cpp_expr(stmt->data.write.value); fputs(";\n", stdout);
+            } else printf("std::cout.put(%d);\n", stmt->data.write.separator);
+            break;
         case STMT_PRINT:
             fputs("std::cout << ", stdout);
             cpp_expr(stmt->data.print.expression);
             fputs(" << '\\n';\n", stdout);
+            break;
+        case STMT_DECLARATIONS:
+            for (size_t i = 0; i < stmt->data.block.count; ++i) cpp_statement(stmt->data.block.statements[i]);
             break;
         case STMT_BLOCK:
             fputs("{\n", stdout);
@@ -250,6 +325,10 @@ static void cpp_statement(const Statement *stmt) {
             fputs(")\n", stdout);
             cpp_statement(stmt->data.while_stmt.body);
             break;
+        case STMT_EACH:
+            fputs("{ auto fken_range = ", stdout); cpp_expr(stmt->data.each.values);
+            printf("; for (auto fken_v%d : fken_range) ", -stmt->data.each.offset);
+            cpp_statement(stmt->data.each.body); fputs("}\n", stdout); break;
         case STMT_FOR:
             fputs("{\n", stdout);
             if (stmt->data.for_stmt.init) cpp_statement(stmt->data.for_stmt.init);
@@ -277,7 +356,8 @@ static void cpp_signature(const Function *function) {
     for (size_t i = 0; i < function->count; i++) {
         const Parameter *param = &function->params[i];
         if (i) fputs(", ", stdout);
-        printf("%s %sfken_v%d", cpp_type(param->type), param->by_ref ? "&" : "", -param->offset);
+        if (param->by_ref) printf("std::function<%s&()> fken_v%d", cpp_type(param->type), -param->offset);
+        else printf("%s %sfken_v%d", cpp_type(param->type), param->by_ref ? "&" : "", -param->offset);
     }
     putchar(')');
 }
@@ -286,6 +366,12 @@ void generate_cpp(const Program *program) {
     fputs("// Generated by fken_cpl. Compile with GCC/Clang C++20 and Boost headers.\n", stdout);
     fputs(cpp_runtime, stdout);
     putchar('\n');
+    for (size_t i = 0; i < program->record_count; ++i) {
+        const Record *r = &program->records[i];
+        printf("struct fken_record%zu {\n", i);
+        for (size_t j = 0; j < r->count; ++j) printf("%s f%zu{};\n", cpp_type(r->fields[j].type), j);
+        fputs("};\n", stdout);
+    }
     for (size_t i = 0; i < program->function_count; i++) {
         cpp_signature(program->functions[i]);
         fputs(";\n", stdout);
@@ -293,7 +379,9 @@ void generate_cpp(const Program *program) {
     for (size_t i = 0; i < program->function_count; i++) {
         cpp_signature(program->functions[i]);
         putchar('\n');
-        cpp_statement(program->functions[i]->body);
+        current_function = program->functions[i];
+        cpp_statement(current_function->body);
+        current_function = NULL;
     }
     fputs("\nint main() {\n"
           "std::ios::sync_with_stdio(false);\n"

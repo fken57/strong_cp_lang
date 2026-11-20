@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <iostream>
+#include <functional>
 #include <limits>
 #include <stdexcept>
 #include <string>
@@ -150,16 +151,18 @@ public:
     }
 };
 
-template <int Rank> struct VectorType { using type = std::vector<typename VectorType<Rank - 1>::type>; };
-template <> struct VectorType<0> { using type = Int; };
-template <int Rank> using Vec = typename VectorType<Rank>::type;
+template <int Rank, class Element = Int> struct VectorType {
+    using type = std::vector<typename VectorType<Rank - 1, Element>::type>;
+};
+template <class Element> struct VectorType<0, Element> { using type = Element; };
+template <int Rank, class Element = Int> using Vec = typename VectorType<Rank, Element>::type;
 using Array = Vec<1>;
 
-template <int Rank>
-Vec<Rank> make_vec(const std::vector<std::size_t> &shape, std::size_t dimension = 0) {
-    Vec<Rank> values(shape[dimension]);
+template <int Rank, class Element = Int>
+Vec<Rank, Element> make_vec(const std::vector<std::size_t> &shape, std::size_t dimension = 0) {
+    Vec<Rank, Element> values(shape[dimension]);
     if constexpr (Rank > 1) {
-        for (auto &child : values) child = make_vec<Rank - 1>(shape, dimension + 1);
+        for (auto &child : values) child = make_vec<Rank - 1, Element>(shape, dimension + 1);
     }
     return values;
 }
@@ -200,6 +203,40 @@ T &at(std::vector<T> &values, const Int &index) {
 template <class T>
 const T &at(const std::vector<T> &values, const Int &index) {
     return values[checked_index(values, index)];
+}
+
+struct Edge {
+    Int to, cost, id;
+};
+
+template <bool Directed>
+class Graph {
+    std::vector<std::vector<Edge>> rows_;
+    Int edge_count_;
+public:
+    explicit Graph(const Int &n = Int(0)) : rows_(n.to_size("vertex count")) {}
+    Int size() const { return len(rows_); }
+    const Int &edge_count() const { return edge_count_; }
+    const std::vector<Edge> &neighbors(const Int &u) const { return at(rows_, u); }
+
+    Int add(const Int &u, const Int &v, const Int &cost = Int(1)) {
+        auto &from = at(rows_, u);
+        auto &to = at(rows_, v);
+        const Int id = edge_count_;
+        Int next = id + Int(1);
+        from.push_back({v, cost, id});
+        if constexpr (!Directed) {
+            try { to.push_back({u, cost, id}); }
+            catch (...) { from.pop_back(); throw; }
+        }
+        edge_count_ = std::move(next);
+        return id;
+    }
+};
+
+template <bool Directed>
+const std::vector<Edge> &at(const Graph<Directed> &graph, const Int &u) {
+    return graph.neighbors(u);
 }
 
 template <class Values>

@@ -118,6 +118,18 @@ class LanguageTests(unittest.TestCase):
         self.assertEqual(self.service.diagnostics("int[][] g(2,3); g[0].push(4); while(1){break;}"), [])
         self.assertIn("break is only allowed", self.service.diagnostics("break;")[0]["message"])
 
+    def test_record_and_graph_members(self):
+        self.assertEqual(set(self.completion("graph G(2); G.|")), {"size", "add", "edge_count"})
+        self.assertEqual(set(self.completion("graph G(2); G[0][0].|")), {"to", "cost", "id"})
+        self.assertIn("cost", self.completion("graph G(2); for(edge e : G[0]) { e.| }"))
+        point = "struct P { int x; fn twice() -> int {return self.x*2;} } "
+        self.assertEqual(set(self.completion(point + "P[] a(1); a[0].|")), {"x", "twice"})
+        self.assertIn("x", self.completion("struct P { int x; fn get() -> int { return self.|; } }"))
+        for source in ("graph G(1); G[0].clear();", "graph G(1); G[0][0].cost = 1;",
+                       point + "P q = P{x: 1, x: 2};", point + "P q; q.missing = 1;"):
+            with self.subTest(source=source):
+                self.assertTrue(self.service.diagnostics(source))
+
     def test_check_cli(self):
         result = subprocess.run([str(ROOT / "fken_cpl"), "--check", "--code", "print(1);"],
                                 capture_output=True, text=True, timeout=10)

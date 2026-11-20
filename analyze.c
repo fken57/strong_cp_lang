@@ -25,6 +25,8 @@ static Symbol *find_symbol(SymbolTable *symbols, const char *name, Token *token)
 static void expect_expr(Expr *expr, SymbolTable *symbols, ValueType expected) {
     analyze_expr_as(expr, symbols, expected);
     if (expr->value_type != expected) {
+        if (type_base(expected) >= VALUE_EDGE || type_base(expr->value_type) >= VALUE_EDGE)
+            error_at(expr->token, "incompatible value type");
         if (expected > VALUE_INT) error_at(expr->token, "expected array expression with %d dimension(s)", expected);
         error_at(expr->token, "expected integer expression");
     }
@@ -32,6 +34,17 @@ static void expect_expr(Expr *expr, SymbolTable *symbols, ValueType expected) {
 
 static void analyze_expr(Expr *expr, SymbolTable *symbols) {
     analyze_expr_as(expr, symbols, -2);
+}
+
+static bool writable(const Expr *expr) {
+    while (expr->type == EXPR_FIELD || expr->type == EXPR_INDEX) {
+        if (expr->type == EXPR_FIELD) expr = expr->data.field.owner;
+        else {
+            expr = expr->data.index.array;
+            if (graph_type(expr->value_type)) return false;
+        }
+    }
+    return expr->type == EXPR_VARIABLE;
 }
 
 static void analyze_expr_as(Expr *expr, SymbolTable *symbols, ValueType hint) {
@@ -53,7 +66,9 @@ static void analyze_expr_as(Expr *expr, SymbolTable *symbols, ValueType hint) {
             break;
         case EXPR_CONSTRUCT:
             expr->value_type = expr->data.construct.type;
-            if (expr->data.construct.count && expr->data.construct.count != (size_t)expr->value_type) {
+            if (graph_type(expr->value_type) && expr->data.construct.count != 1)
+                error_at(expr->token, "graph constructor requires a vertex count");
+            if (!graph_type(expr->value_type) && expr->data.construct.count && expr->data.construct.count != (size_t)type_rank(expr->value_type)) {
                 error_at(expr->token, "constructor requires one size per vector dimension");
             }
             for (size_t i = 0; i < expr->data.construct.count; i++) {
@@ -61,8 +76,8 @@ static void analyze_expr_as(Expr *expr, SymbolTable *symbols, ValueType hint) {
             }
             break;
         case EXPR_ARRAY: {
-            ValueType element = hint > VALUE_INT ? hint - 1 : VALUE_INT;
-            if (hint <= VALUE_INT) {
+            ValueType element = type_rank(hint) ? hint - 1 : VALUE_INT;
+            if (!type_rank(hint)) {
                 for (size_t i = 0; i < expr->data.array.count; i++) {
                     analyze_expr(expr->data.array.items[i], symbols);
                     if (expr->data.array.items[i]->value_type > element) element = expr->data.array.items[i]->value_type;
@@ -75,18 +90,75 @@ static void analyze_expr_as(Expr *expr, SymbolTable *symbols, ValueType hint) {
             }
             break;
         }
+        case EXPR_RECORD: {
+            expr->value_type = expr->data.record.type;
+            Record *r = &symbols->program->records[(expr->value_type - VALUE_RECORD)/TYPE_STRIDE];
+            for (size_t i = 0; i < expr->data.record.count; ++i)
+                expect_expr(expr->data.record.values[i], symbols, r->fields[expr->data.record.indices[i]].type);
+            break;
+        }
+        case EXPR_FIELD: {
+            analyze_expr(expr->data.field.owner, symbols);
+            ValueType owner = expr->data.field.owner->value_type;
+            Field edge[] = {{"to", VALUE_INT}, {"cost", VALUE_INT}, {"id", VALUE_INT}};
+            Field *fields = edge;
+            size_t count = 3;
+            if (owner != VALUE_EDGE) {
+                if (owner < VALUE_RECORD || type_rank(owner)) error_at(expr->token, "field access requires a structure");
+                Record *r = &symbols->program->records[(owner - VALUE_RECORD) / TYPE_STRIDE];
+                fields = r->fields; count = r->count;
+            }
+            for (size_t i = 0; i < count; ++i) {
+                if (!strcmp(expr->data.field.name, fields[i].name)) {
+                    expr->data.field.index = i;
+                    expr->value_type = fields[i].type;
+                    return;
+                }
+            }
+            error_at(expr->token, "unknown field '%s'", expr->data.field.name);
+        }
         case EXPR_INDEX:
             analyze_expr(expr->data.index.array, symbols);
-            if (expr->data.index.array->value_type <= VALUE_INT) error_at(expr->token, "cannot index a non-array value");
+            if (!type_rank(expr->data.index.array->value_type) && !graph_type(expr->data.index.array->value_type)) error_at(expr->token, "cannot index a non-array value");
             expect_expr(expr->data.index.index, symbols, VALUE_INT);
-            expr->value_type = expr->data.index.array->value_type - 1;
+            expr->value_type = graph_type(expr->data.index.array->value_type) ? VALUE_EDGE + 1 : expr->data.index.array->value_type - 1;
             break;
         case EXPR_CALL: {
             expr->data.call.function = NULL;
             if (expr->data.call.receiver) {
                 Expr *receiver = expr->data.call.receiver;
                 analyze_expr(receiver, symbols);
-                if (receiver->value_type <= VALUE_INT) error_at(expr->token, "vector methods require an array receiver");
+                if (receiver->value_type >= VALUE_RECORD && !type_rank(receiver->value_type)) {
+                    for (size_t i = 0; i < symbols->program->function_count; ++i) {
+                        Function *f = symbols->program->functions[i];
+                        if (f->owner != receiver->value_type || strcmp(f->name, expr->data.call.name)) continue;
+                        if (expr->data.call.count + 1 != f->count) error_at(expr->token, "wrong number of method arguments");
+                        for (size_t j = 1; j < f->count; ++j) {
+                            Expr *arg = expr->data.call.args[j-1];
+                            expect_expr(arg, symbols, f->params[j].type);
+                            if (f->params[j].by_ref && arg->type != EXPR_VARIABLE)
+                                error_at(arg->token, "reference argument must be a variable");
+                        }
+                        expr->data.call.function = f;
+                        expr->value_type = f->return_type;
+                        return;
+                    }
+                    error_at(expr->token, "unknown structure method '%s'", expr->data.call.name);
+                }
+                if (graph_type(receiver->value_type)) {
+                    const char *name = expr->data.call.name;
+                    size_t n = expr->data.call.count;
+                    if (!strcmp(name, "add")) {
+                        if (!writable(receiver) || n < 2 || n > 3)
+                            error_at(expr->token, "graph.add requires a writable graph and 2 or 3 arguments");
+                        for (size_t i = 0; i < n; ++i) expect_expr(expr->data.call.args[i], symbols, VALUE_INT);
+                    } else if (n || (strcmp(name, "size") && strcmp(name, "edge_count"))) {
+                        error_at(expr->token, "invalid graph method '%s'", name);
+                    }
+                    expr->value_type = VALUE_INT;
+                    return;
+                }
+                if (!type_rank(receiver->value_type)) error_at(expr->token, "vector methods require an array receiver");
                 const char *name = expr->data.call.name;
                 size_t min_args = 0, max_args = 0;
                 ValueType result = VALUE_VOID;
@@ -100,7 +172,7 @@ static void analyze_expr_as(Expr *expr, SymbolTable *symbols, ValueType hint) {
                 if (expr->data.call.count < min_args || expr->data.call.count > max_args) {
                     error_at(expr->token, "wrong number of arguments to vector method '%s'", name);
                 }
-                if (mutates && !lvalue_root(receiver)) error_at(expr->token, "mutating method receiver must be a variable or indexed variable");
+                if (mutates && !writable(receiver)) error_at(expr->token, "mutating method receiver must be a variable or indexed variable");
                 for (size_t i = 0; i < expr->data.call.count; i++) {
                     ValueType expected = strcmp(name, "resize") == 0 && i == 0 ? VALUE_INT : receiver->value_type - 1;
                     expect_expr(expr->data.call.args[i], symbols, expected);
@@ -111,7 +183,7 @@ static void analyze_expr_as(Expr *expr, SymbolTable *symbols, ValueType hint) {
             // ponytail: linear function lookup; index names if large files make analysis slow.
             for (size_t i = 0; i < symbols->program->function_count; i++) {
                 Function *function = symbols->program->functions[i];
-                if (strcmp(expr->data.call.name, function->name) != 0) continue;
+                if (function->owner || strcmp(expr->data.call.name, function->name) != 0) continue;
                 if (expr->data.call.count != function->count) {
                     error_at(expr->token, "wrong number of arguments to '%s'", function->name);
                 }
@@ -136,7 +208,7 @@ static void analyze_expr_as(Expr *expr, SymbolTable *symbols, ValueType hint) {
                 for (size_t j = 0; j < count; j++) {
                     if (strcmp(expr->data.call.name, "len") == 0) {
                         analyze_expr(expr->data.call.args[j], symbols);
-                        if (expr->data.call.args[j]->value_type <= VALUE_INT) error_at(expr->token, "len requires an array");
+                        if (!type_rank(expr->data.call.args[j]->value_type)) error_at(expr->token, "len requires an array");
                     } else expect_expr(expr->data.call.args[j], symbols, builtins[i].argument);
                 }
                 expr->value_type = builtins[i].result;
@@ -198,6 +270,7 @@ static void analyze_statement(Statement *stmt, int *offset, SymbolTable *symbols
                 stmt->data.assign.target = target;
             }
             analyze_expr(stmt->data.assign.target, symbols);
+            if (!writable(stmt->data.assign.target)) error_at(stmt->token, "graph adjacency is read-only");
             ValueType type = stmt->data.assign.target->value_type;
             TokenType op = stmt->data.assign.op;
             if (op != TK_ASSIGN && type != VALUE_INT) {
@@ -223,9 +296,16 @@ static void analyze_statement(Statement *stmt, int *offset, SymbolTable *symbols
                 expect_expr(stmt->data.return_stmt.value, symbols, symbols->function->return_type);
             }
             break;
+        case STMT_WRITE:
+            if (stmt->data.write.value) expect_expr(stmt->data.write.value, symbols, VALUE_INT);
+            break;
         case STMT_PRINT:
             analyze_expr(stmt->data.print.expression, symbols);
             if (stmt->data.print.expression->value_type == VALUE_VOID) error_at(stmt->token, "cannot print a void result");
+            if (type_base(stmt->data.print.expression->value_type) != VALUE_INT) error_at(stmt->token, "print requires integers or integer vectors");
+            break;
+        case STMT_DECLARATIONS:
+            for (size_t i = 0; i < stmt->data.block.count; ++i) analyze_statement(stmt->data.block.statements[i], offset, symbols);
             break;
         case STMT_BLOCK:
             analyze_block(stmt, offset, symbols);
@@ -243,6 +323,17 @@ static void analyze_statement(Statement *stmt, int *offset, SymbolTable *symbols
             analyze_block(stmt->data.while_stmt.body, offset, symbols);
             symbols->loop_depth--;
             break;
+        case STMT_EACH: {
+            size_t count = symbols->count, scope = symbols->scope_start;
+            expect_expr(stmt->data.each.values, symbols, stmt->data.each.type + 1);
+            symbols->scope_start = count;
+            stmt->data.each.offset = declare_symbol(symbols, offset, stmt->data.each.name, stmt->data.each.type, stmt->token);
+            ++symbols->loop_depth;
+            analyze_block(stmt->data.each.body, offset, symbols);
+            --symbols->loop_depth;
+            symbols->count = count; symbols->scope_start = scope;
+            break;
+        }
         case STMT_FOR: {
             size_t saved_count = symbols->count, saved_scope = symbols->scope_start;
             symbols->scope_start = saved_count;
@@ -298,12 +389,12 @@ void analyze(Program *program) {
     for (size_t i = 0; i < program->function_count; i++) {
         Function *function = program->functions[i];
         for (size_t j = 0; j < i; j++) {
-            if (strcmp(function->name, program->functions[j]->name) == 0) {
+            if (function->owner == program->functions[j]->owner && strcmp(function->name, program->functions[j]->name) == 0) {
                 error_at(function->token, "duplicate function '%s'", function->name);
             }
         }
         for (size_t j = 0; j < sizeof(builtins) / sizeof(*builtins); j++) {
-            if (strcmp(function->name, builtins[j].name) == 0) {
+            if (!function->owner && strcmp(function->name, builtins[j].name) == 0) {
                 error_at(function->token, "cannot redefine builtin '%s'", function->name);
             }
         }
