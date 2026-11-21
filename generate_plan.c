@@ -13,6 +13,8 @@ static void plan_args(Expr **args, size_t count) {
 static void plan_expr(const Expr *e) {
     if (!e) { fputs("null", stdout); return; }
     switch (e->type) {
+    case EXPR_RESIDUE:
+        printf("[\"residue\",%d,", e->value_type); plan_expr(e->data.residue.value); break;
     case EXPR_TEXT:
         fputs("[\"text\",", stdout); json_string(stdout, e->data.text); break;
     case EXPR_NUMBER:
@@ -21,9 +23,10 @@ static void plan_expr(const Expr *e) {
         printf("[\"var\",%d", -e->data.variable.offset); break;
     case EXPR_BINARY:
         printf("[\"%s\",", token_type_name(e->data.binary.op));
-        plan_expr(e->data.binary.left); putchar(','); plan_expr(e->data.binary.right); break;
+        plan_expr(e->data.binary.left); putchar(','); plan_expr(e->data.binary.right);
+        printf(",%d", e->value_type); break;
     case EXPR_UNARY:
-        fputs("[\"neg\",", stdout); plan_expr(e->data.unary.operand); break;
+        fputs("[\"neg\",", stdout); plan_expr(e->data.unary.operand); printf(",%d", e->value_type); break;
     case EXPR_ARRAY:
         printf("[\"arrayLiteral\",%d,", e->value_type); plan_args(e->data.array.items, e->data.array.count); break;
     case EXPR_CONSTRUCT:
@@ -69,7 +72,8 @@ static void plan_statement(const Statement *s) {
         printf("[\"let\",%d,", -s->data.let.offset); plan_expr(s->data.let.value); break;
     case STMT_ASSIGN:
         printf("[\"assign\",\"%s\",", token_type_name(s->data.assign.op));
-        plan_expr(s->data.assign.target); putchar(','); plan_expr(s->data.assign.value); break;
+        plan_expr(s->data.assign.target); putchar(','); plan_expr(s->data.assign.value);
+        printf(",%d", s->data.assign.target->value_type); break;
     case STMT_WRITE:
         fputs("[\"write\",", stdout); plan_expr(s->data.write.value); break;
     case STMT_PRINT:
@@ -100,7 +104,18 @@ static void plan_statement(const Statement *s) {
 }
 
 static void generate_plan(const Program *p) {
-    fputs("{\"records\":[", stdout);
+    fputs("{\"moduli\":[", stdout);
+    for (size_t i = 0; i < p->modulus_count; ++i) {
+        if (i) putchar(',');
+        json_string(stdout, p->moduli[i]);
+    }
+    fputs("],\"assocs\":[", stdout);
+    for (size_t i = 0; i < p->assoc_count; ++i) {
+        const AssocType a = p->assocs[i];
+        if (i) putchar(',');
+        printf("[%d,%d,%d]", a.kind, a.key, a.value);
+    }
+    fputs("],\"records\":[", stdout);
     for (size_t i = 0; i < p->record_count; ++i) {
         if (i) putchar(',');
         putchar('[');

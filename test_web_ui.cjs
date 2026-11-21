@@ -59,6 +59,15 @@ cout << a[0] << ' ' << a[1] << ' ' << a[0].size() << ' ' << c << s << '\\n';`);
     await page.locator("#stdin").fill("word");
     await page.locator("#run").click();
     await page.waitForFunction(() => document.querySelector("#stdout").textContent === "かな! ax 7 word\n");
+    await source.fill(`int twice(int a) { return a + a; }
+map<string,mint<13>> scores;
+scores["x"] += 9;
+scores["x"] /= 3;
+multi_set<int> copies; copies.insert(2); copies.insert(2);
+digraph G(3); G.add(0,1,8);
+print(twice(scores["x"].val())); print(copies[2]); print(G.dijkstra(0));`);
+    await page.locator("#run").click();
+    await page.waitForFunction(() => document.querySelector("#stdout").textContent === "6\n2\n0 8 -1\n");
     await source.fill("");
     await source.pressSequentially("([])");
     assert.equal(await source.inputValue(), "([])");

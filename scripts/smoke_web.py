@@ -77,5 +77,19 @@ compiled = json.loads(request('/api/compile', {'source': release_source}))
 assert not compiled['diagnostics'] and 'fken::push_back' in compiled['cpp'] and '.diameter(' in compiled['cpp']
 planned = json.loads(request('/api/plan', {'source': release_source}))
 assert not planned['diagnostics'] and planned['plan']['main']
+submission = """
+int twice(int a) { return a + a; }
+map<string,mint<13>> counts;
+counts["key"] += 5;
+digraph G(2);
+G.add(0, 1, 7);
+print(twice(counts["key"].val()) + G.dijkstra(0)[1]);
+"""
+compiled = json.loads(request('/api/compile', {'source': submission}))
+assert not compiled['diagnostics']
+assert compiled['cpp'].startswith('// fken_cpl: https://github.com/fken57/strong_cp_lang')
+assert '// int twice(int a) { return a + a; }' in compiled['cpp']
+plan = json.loads(request('/api/plan', {'source': submission}))
+assert not plan['diagnostics'] and plan['plan']['moduli'] == ['13'] and plan['plan']['assocs']
 request('/api/compile', {'source': 'print(1);'}, expected=403, headers={'Origin': 'https://foreign.invalid'})
 print('PASS: container health, editor assets, examples, C++ conversion, diagnostics, method completion, same-origin checks.')

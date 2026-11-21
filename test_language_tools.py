@@ -124,7 +124,7 @@ class LanguageTests(unittest.TestCase):
         self.assertIn("break is only allowed", self.service.diagnostics("break;")[0]["message"])
 
     def test_record_and_graph_members(self):
-        self.assertEqual(set(self.completion("graph G(2); G.|")), {"size", "add", "edge_count", "diameter"})
+        self.assertEqual(set(self.completion("graph G(2); G.|")), {"size", "add", "edge_count", "diameter", "bfs", "dijkstra", "components"})
         self.assertEqual(set(self.completion("graph G(2); G[0][0].|")), {"to", "cost", "id"})
         self.assertIn("cost", self.completion("graph G(2); for(edge e : G[0]) { e.| }"))
         point = "struct P { int x; fn twice() -> int {return self.x*2;} } "
@@ -151,6 +151,14 @@ class LanguageTests(unittest.TestCase):
         self.assertIn("push_back", self.completion('string s = "https://ex"; s.pu|'))
         self.assertIn("push_back", self.completion('auto words = ["a", "b"]; words[0].pu|'))
         for source in ("string s; s.push_back(1);", "char c = 'ab';", 'string s = "unterminated'):
+            self.assertTrue(self.service.diagnostics(source), source)
+
+    def test_typed_functions_mint_and_map(self):
+        self.assertIn("twice", self.completion("int twice(int a) { return a * 2; } tw|"))
+        self.assertIn("val", self.completion("map<string,mint<13>> m; m[\"x\"].va|"))
+        self.assertIn("insert", self.completion("multi_set<int> s; s.in|"))
+        for source in ("mint<0> a;", "mint998 a; mint107 b; a = b;",
+                       "set<int> s; s[1] = 2;", "digraph D(1); D.components();"):
             self.assertTrue(self.service.diagnostics(source), source)
 
     def test_check_cli(self):

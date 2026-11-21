@@ -32,7 +32,7 @@ void end(){
     return;
 }
 
-void generate_binary_operation(ExprType type){
+void generate_binary_operation(TokenType type){
     switch(type) {
         case TK_PLUS:
             printf("\taddq %%rdi, %%rax\n");
@@ -43,9 +43,11 @@ void generate_binary_operation(ExprType type){
         case TK_STAR:
             printf("\timulq %%rdi, %%rax\n");
             break;
+        case TK_PERCENT:
         case TK_SLASH:
             printf("\tcqto\n");
             printf("\tidivq %%rdi\n");
+            if (type == TK_PERCENT) printf("\tmovq %%rdx, %%rax\n");
             break;
         case TK_EQ:
             printf("\tcmpq %%rdi, %%rax\n");

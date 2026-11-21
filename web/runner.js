@@ -17,9 +17,50 @@ function execute(plan, stdin, print) {
     remainingElements -= n;
   }
   const stride = 65536, edgeType = stride, graphType = 2*stride, digraphType = 3*stride;
+  const mintBase = 16384 * stride, assocBase = 24576 * stride;
+  const moduli = plan.moduli.map(BigInt);
+  function modulus(type) { return type >= mintBase && type < assocBase ? moduli[(type - mintBase) / stride] : undefined; }
+  function normalize(value, mod) {
+    const remainder = value % mod;
+    return remainder < 0n ? remainder + mod : remainder;
+  }
+  function gcd(a, b) {
+    while (b) [a, b] = [b, a % b];
+    return a < 0n ? -a : a;
+  }
+  function powMod(base, exponent, mod) {
+    if (mod <= 0n || exponent < 0n) throw Error("法は正、指数は 0 以上にしてください。");
+    base = normalize(base, mod);
+    let result = 1n % mod;
+    while (exponent) {
+      if (exponent & 1n) result = result * base % mod;
+      exponent >>= 1n;
+      if (exponent) base = base * base % mod;
+    }
+    return result;
+  }
+  function invMod(value, mod) {
+    if (mod <= 0n) throw Error("法は正にしてください。");
+    let a = mod, b = normalize(value, mod), x = 0n, y = 1n;
+    while (b) {
+      const q = a / b;
+      [a, b] = [b, a - q * b];
+      [x, y] = [y, x - q * y];
+    }
+    if (a !== 1n) throw Error("値と法は互いに素である必要があります。");
+    return normalize(x, mod);
+  }
+  function typedBinary(op, x, y, type) {
+    const mod = modulus(type);
+    if (mod === undefined) return binary(op, x, y);
+    return normalize(op === "TK_SLASH" ? x * invMod(y, mod) : binary(op, x, y), mod);
+  }
   function isGraph(type) { return type === graphType || type === digraphType; }
   const charType = 6 * stride, stringType = charType + 1;
   function initial(type) {
+    if (type >= assocBase && type % stride === 0)
+      return {groups: new Map(), info: plan.assocs[(type - assocBase) / stride], total: 0};
+    if (mintBase <= type && type % stride === 0) return 0n;
     if (type === charType) return "\0";
     if (type === stringType) return "";
     if (type % stride) return [];
@@ -33,7 +74,15 @@ function execute(plan, stdin, print) {
     return fields.map(initial);
   }
   function copy(x) {
-    if (typeof x === "object" && !Array.isArray(x)) return {rows: copy(x.rows), edges: x.edges};
+    if (typeof x === "object" && !Array.isArray(x)) {
+      if (x.groups) {
+        allocate(x.groups.size);
+        const groups = new Map();
+        for (const [key, value] of x.groups) groups.set(key, copy(value));
+        return {groups, info: x.info, total: x.total};
+      }
+      return {rows: copy(x.rows), edges: x.edges};
+    }
     if (!Array.isArray(x)) return x;
     allocate(x.length);
     return x.map(copy);
@@ -64,6 +113,7 @@ function execute(plan, stdin, print) {
       case "TK_PLUS": return x + y;
       case "TK_MINUS": return x - y;
       case "TK_STAR": return x * y;
+      case "TK_PERCENT": if (y === 0n) throw Error("0 で割ることはできません。"); return x % y;
       case "TK_SLASH": if (y === 0n) throw Error("0 で割ることはできません。"); return x / y;
       case "TK_LT": return BigInt(x < y);
       case "TK_LE": return BigInt(x <= y);
@@ -72,6 +122,54 @@ function execute(plan, stdin, print) {
       case "TK_EQ": return BigInt(x === y);
       case "TK_NE": return BigInt(x !== y);
       default: throw Error("未対応の演算です。");
+    }
+  }
+  function groupCount(container, key) {
+    if (!container.groups.has(key)) return 0;
+    const [kind] = container.info;
+    if (kind >= 4) return container.groups.get(key);
+    return (kind & 2) ? container.groups.get(key).length : 1;
+  }
+  function assocIndex(container, key) {
+    const [kind, , valueType] = container.info;
+    if (kind >= 4) return BigInt(groupCount(container, key));
+    if (kind >= 2) return copy(container.groups.get(key) ?? initial(valueType + 1));
+    if (!container.groups.has(key)) {
+      allocate(1);
+      container.groups.set(key, initial(valueType));
+    }
+    return container.groups.get(key);
+  }
+  function assocMethod(container, name, values) {
+    const [kind, keyType, valueType] = container.info;
+    const [key, value] = values, groups = container.groups;
+    const multi = Boolean(kind & 2);
+    switch (name) {
+      case "size": return BigInt(multi ? container.total : groups.size);
+      case "count": return BigInt(groupCount(container, key));
+      case "contains": return BigInt(groups.has(key));
+      case "erase": {
+        const removed = groupCount(container, key);
+        groups.delete(key);
+        if (multi) container.total -= removed;
+        return BigInt(removed);
+      }
+      case "keys": {
+        allocate(groups.size);
+        const keys = [...groups.keys()];
+        if (!(kind & 1)) keys.sort((a, b) => a < b ? -1 : a > b ? 1 : 0);
+        return keyType === charType ? keys.join("") : keys;
+      }
+      case "insert":
+        if (multi || !groups.has(key)) allocate(1);
+        if (kind >= 4) groups.set(key, multi ? groupCount(container, key) + 1 : 1);
+        else if (!multi) groups.set(key, value);
+        else {
+          const bucket = groups.get(key) ?? initial(valueType + 1);
+          if (valueType === charType) groups.set(key, bucket + value);
+          else { bucket.push(value); groups.set(key, bucket); }
+        }
+        if (multi) container.total++;
     }
   }
   // Capture indices once, then resolve against the latest root after side effects.
@@ -83,6 +181,11 @@ function execute(plan, stdin, print) {
     }
     const parent = reference(node[1], env);
     const i = expr(node[2], env);
+    if (parent.get().groups) {
+      const value = parent.get();
+      if (value.info[0] < 2) assocIndex(value, i);
+      return {get: () => assocIndex(parent.get(), i), set: v => parent.get().groups.set(i, v)};
+    }
     function position() { const value = parent.get(); const a = value.rows ?? value; return [a, index(a, i)]; }
     position();
     return {
@@ -128,6 +231,87 @@ function execute(plan, stdin, print) {
     allocate(3);
     return [dist, BigInt(one), BigInt(two)];
   }
+  function breadthFirst(rows, source) {
+    allocate(2 * rows.length);
+    const distance = Array(rows.length).fill(-1n), queue = [index(rows, source)];
+    distance[queue[0]] = 0n;
+    for (const u of queue) {
+      for (const [to] of rows[u]) {
+        const v = Number(to);
+        if (distance[v] !== -1n) continue;
+        distance[v] = distance[u] + 1n;
+        queue.push(v);
+      }
+    }
+    return distance;
+  }
+  function components(rows) {
+    allocate(2 * rows.length);
+    const result = Array(rows.length).fill(-1n);
+    let id = 0n;
+    for (let start = 0; start < rows.length; start++) {
+      if (result[start] !== -1n) continue;
+      const queue = [start];
+      result[start] = id;
+      for (const u of queue) {
+        for (const [to] of rows[u]) {
+          const v = Number(to);
+          if (result[v] !== -1n) continue;
+          result[v] = id;
+          queue.push(v);
+        }
+      }
+      id++;
+    }
+    return result;
+  }
+  function dijkstra(rows, source) {
+    allocate(rows.length);
+    const start = index(rows, source), distance = Array(rows.length).fill(-1n);
+    const heap = [];
+    function push(cost, vertex) {
+      allocate(2);
+      let i = heap.length;
+      const item = [cost, vertex];
+      heap.push(item);
+      while (i) {
+        const parent = Math.floor((i - 1) / 2);
+        if (heap[parent][0] <= cost) break;
+        heap[i] = heap[parent];
+        i = parent;
+      }
+      heap[i] = item;
+    }
+    function pop() {
+      const first = heap[0], tail = heap.pop();
+      if (!heap.length) return first;
+      let i = 0;
+      while (2*i + 1 < heap.length) {
+        let child = 2*i + 1;
+        if (child + 1 < heap.length && heap[child + 1][0] < heap[child][0]) child++;
+        if (heap[child][0] >= tail[0]) break;
+        heap[i] = heap[child];
+        i = child;
+      }
+      heap[i] = tail;
+      return first;
+    }
+    distance[start] = 0n;
+    push(0n, start);
+    while (heap.length) {
+      const [cost, u] = pop();
+      if (distance[u] !== cost) continue;
+      for (const [to, weight] of rows[u]) {
+        if (weight < 0n) throw Error("dijkstra には非負の辺重みが必要です。");
+        const v = Number(to), candidate = cost + weight;
+        if (distance[v] !== -1n && candidate >= distance[v]) continue;
+        distance[v] = candidate;
+        push(candidate, v);
+      }
+    }
+    return distance;
+  }
+
   function call([, name, receiver, args, rank], env) {
     const fn = functions.get(name);
     if (fn) {
@@ -144,7 +328,13 @@ function execute(plan, stdin, print) {
       const ref = reference(receiver, env);
       const values = args.map(arg => expr(arg, env));
       const a = ref.get();
+      if (assocBase <= rank && rank % stride === 0) return assocMethod(a, name, values);
+      const mod = modulus(rank);
+      if (mod !== undefined) return name === "val" ? a : powMod(a, values[0], mod);
       if (isGraph(rank)) {
+        if (name === "bfs") return breadthFirst(a.rows, values[0]);
+        if (name === "dijkstra") return dijkstra(a.rows, values[0]);
+        if (name === "components") return components(a.rows);
         if (name === "diameter") return diameter(a);
         if (name === "size") return BigInt(a.rows.length);
         if (name === "edge_count") return a.edges;
@@ -238,6 +428,14 @@ function execute(plan, stdin, print) {
       if (tokenOffset === token.length) { cursor++; tokenOffset = 0; }
       return ch;
     }
+    if (name === "gcd") return gcd(...values);
+    if (name === "lcm") {
+      const [a, b] = values;
+      const value = a && b ? a / gcd(a, b) * b : 0n;
+      return value < 0n ? -value : value;
+    }
+    if (name === "pow_mod") return powMod(...values);
+    if (name === "inv_mod") return invMod(...values);
     const n = Number(values[0]);
     allocate(n);
     if (name === "read_vec") return Array.from({length: n}, read);
@@ -246,10 +444,14 @@ function execute(plan, stdin, print) {
   }
   function expr(node, env) {
     switch (node[0]) {
+      case "residue": return normalize(expr(node[2], env), modulus(node[1]));
       case "text": return node[1];
       case "int": return BigInt(node[1]);
       case "var": case "index": case "field": return copy(location(node, env).get());
-      case "neg": return -expr(node[1], env);
+      case "neg": {
+        const result = -expr(node[1], env), mod = modulus(node[2]);
+        return mod === undefined ? result : normalize(result, mod);
+      }
       case "arrayLiteral": {
         allocate(node[2].length);
         const values = node[2].map(e => expr(e, env));
@@ -268,7 +470,7 @@ function execute(plan, stdin, print) {
         return shape.length ? construct(shape, 0, node[1] - node[1] % stride) : initial(node[1]);
       }
       case "call": return call(node, env);
-      default: return binary(node[0], expr(node[1], env), expr(node[2], env));
+      default: return typedBinary(node[0], expr(node[1], env), expr(node[2], env), node[3]);
     }
   }
   function writeValue(value) {
@@ -294,7 +496,7 @@ function execute(plan, stdin, print) {
         const ref = location(s[2], env);
         const rhs = s[3] ? expr(s[3], env) : 1n;
         const op = {TK_INC:"TK_PLUS", TK_DEC:"TK_MINUS"}[s[1]] || s[1].replace("_ASSIGN", "");
-        ref.set(s[1] === "TK_ASSIGN" ? rhs : binary(op, ref.get(), rhs));
+        ref.set(s[1] === "TK_ASSIGN" ? rhs : typedBinary(op, ref.get(), rhs, s[4]));
         break;
       }
       case "write": writeValue(expr(s[1], env)); break;

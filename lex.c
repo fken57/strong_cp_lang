@@ -11,7 +11,7 @@ TokenArray *lex(Source *source) {
     tokens->tokens = calloc(tokens->capacity, sizeof(Token));
     if (!tokens->tokens) error_at(NULL, "out of memory");
     tokens->count = 0;
-    size_t i = 0, line = 1, column = 1;
+    size_t i = 0, line = 1, column = 1, generic_depth = 0;
     while (i < source->length) {
         unsigned char c = (unsigned char)source->data[i];
         if (isspace(c)) {
@@ -38,15 +38,15 @@ TokenArray *lex(Source *source) {
         } else {
             i++; column++;
             switch (c) {
-                case '+': case '-': case '*': case '/':
+                case '+': case '-': case '*': case '/': case '%':
                     token.type = c == '+' ? TK_PLUS : c == '-' ? TK_MINUS :
-                                 c == '*' ? TK_STAR : TK_SLASH;
+                                 c == '*' ? TK_STAR : c == '/' ? TK_SLASH : TK_PERCENT;
                     if (c == '-' && i < source->length && source->data[i] == '>') {
                         token.type = TK_ARROW;
                         i++; column++;
                     } else if (i < source->length && source->data[i] == '=') {
                         token.type = c == '+' ? TK_PLUS_ASSIGN : c == '-' ? TK_MINUS_ASSIGN :
-                                     c == '*' ? TK_STAR_ASSIGN : TK_SLASH_ASSIGN;
+                                     c == '*' ? TK_STAR_ASSIGN : c == '/' ? TK_SLASH_ASSIGN : TK_PERCENT_ASSIGN;
                         i++; column++;
                     } else if (i < source->length && source->data[i] == c &&
                                (c == '+' || c == '-')) {
@@ -83,12 +83,26 @@ TokenArray *lex(Source *source) {
                 case '}': token.type = TK_RBRACE; break;
                 case '[': token.type = TK_LBRACKET; break;
                 case ']': token.type = TK_RBRACKET; break;
-                case ';': token.type = TK_SEMICOLON; break;
+                case ';': token.type = TK_SEMICOLON; generic_depth = 0; break;
                 case ',': token.type = TK_COMMA; break;
                 case '.': token.type = TK_DOT; break;
                 case ':': token.type = TK_COLON; break;
                 case '&': token.type = TK_AMP; break;
                 case '=': case '!': case '<': case '>':
+                    if (c == '>' && generic_depth) {
+                        --generic_depth;
+                        token.type = TK_GT;
+                        break;
+                    }
+                    if (c == '<' && tokens->count) {
+                        Token *previous = &tokens->tokens[tokens->count - 1];
+                        if (previous->type == TK_IDENT && (!strcmp(previous->text, "pair") ||
+                            !strcmp(previous->text, "mint") || assoc_kind(previous->text) >= 0)) {
+                            ++generic_depth;
+                            token.type = TK_LT;
+                            break;
+                        }
+                    }
                     if (i < source->length && source->data[i] == '=') {
                         token.type = c == '=' ? TK_EQ : c == '!' ? TK_NE :
                                      c == '<' ? TK_LE : TK_GE;

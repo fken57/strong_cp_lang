@@ -8,6 +8,18 @@ CLI、VS Code 拡張、stdio LSP、補完・リアルタイム診断付きのロ
 を土台にしています。元の C 製フロントエンドとアセンブリ生成器を引き継ぎ、
 C++ 生成器と自動昇格する整数型を追加しています。
 
+## AtCoder に提出する
+
+Web エディタで **C++ に変換** を押し、**提出用コピー** で C++ 全体をコピーします。
+CLI で同じ提出用ファイルを作るには、`./fken_cpl solution.fken -o Main.cpp` を実行します。
+C++ の先頭には fken_cpl の GitHub URL と変換元のコードがコメントで入ります。
+AtCoder の言語選択は **C++23 (GCC 15.2.0)** を使用できます。
+[AtCoder の言語環境](https://img.atcoder.jp/file/language-update/2025-10/language-list.html)
+
+fken_cpl の変換と補完は言語の規則に基づきます。開催中の ABC・ARC・AGC では生成AIによるコード変換が禁止されています。
+開催前に生成AIで作成されたコードを使う場合は、開始前の公開と出典URLの添付が必要です。
+[AtCoder の公式ルール](https://info.atcoder.jp/entry/llm-rules-ja)
+
 ## 言語リファレンス
 
 - [基礎仕様](docs/SPEC.md) — 型、文字列、配列、構造体、関数、制御構文、入出力
@@ -17,7 +29,7 @@ C++ 生成器と自動昇格する整数型を追加しています。
 
 ### VS Code 拡張
 
-`.build/fken-cpl-0.8.0.vsix` を VS Code の **VSIX からのインストール…** で開きます。
+`.build/fken-cpl-0.9.0.vsix` を VS Code の **VSIX からのインストール…** で開きます。
 Remote WSL の場合は WSL に接続したウィンドウへインストールします。
 Python 3 と GCC / Clang を用意し、`.fken` を開くと補完・診断・ホバーが有効になります。
 右上のボタンまたは Ctrl+Alt+C で、未保存の編集も含めて C++ を新しいタブへ生成します。

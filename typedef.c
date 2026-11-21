@@ -79,7 +79,9 @@ typedef struct {
     size_t count;
 } Record;
 
-typedef struct 
+typedef struct { int kind, key, value; } AssocType;
+
+typedef struct
 {
     Statement **statesments;
     size_t count;
@@ -90,6 +92,10 @@ typedef struct
     size_t function_count;
     Record *records;
     size_t record_count;
+    const char **moduli;
+    size_t modulus_count;
+    AssocType *assocs;
+    size_t assoc_count;
 }Program;
 
 typedef enum {
@@ -130,12 +136,14 @@ typedef enum {
     TK_MINUS,
     TK_STAR,
     TK_SLASH,
+    TK_PERCENT,
     TK_INC,
     TK_DEC,
     TK_PLUS_ASSIGN,
     TK_MINUS_ASSIGN,
     TK_STAR_ASSIGN,
     TK_SLASH_ASSIGN,
+    TK_PERCENT_ASSIGN,
     TK_ASSIGN,
     TK_EQ,
     TK_NE,
@@ -162,6 +170,7 @@ typedef enum {
 typedef enum {
     EXPR_NUMBER,
     EXPR_TEXT,
+    EXPR_RESIDUE,
     EXPR_VARIABLE,
     EXPR_BINARY,
     EXPR_UNARY,
@@ -177,9 +186,12 @@ typedef enum {
 typedef int ValueType;
 enum { VALUE_VOID = -1, VALUE_INT = 0, VALUE_ARRAY = 1, TYPE_STRIDE = 65536,
        VALUE_EDGE = TYPE_STRIDE, VALUE_GRAPH = 2 * TYPE_STRIDE,
-       VALUE_DIGRAPH = 3 * TYPE_STRIDE, VALUE_PAIR = 4 * TYPE_STRIDE, VALUE_DIAMETER = 5 * TYPE_STRIDE, VALUE_CHAR = 6 * TYPE_STRIDE, VALUE_STRING = VALUE_CHAR + 1, VALUE_RECORD = 7 * TYPE_STRIDE };
+       VALUE_DIGRAPH = 3 * TYPE_STRIDE, VALUE_PAIR = 4 * TYPE_STRIDE, VALUE_DIAMETER = 5 * TYPE_STRIDE, VALUE_CHAR = 6 * TYPE_STRIDE, VALUE_STRING = VALUE_CHAR + 1, VALUE_RECORD = 7 * TYPE_STRIDE, VALUE_MINT = 16384 * TYPE_STRIDE, VALUE_ASSOC = 24576 * TYPE_STRIDE };
 static inline int type_rank(ValueType t) { return t < 0 ? 0 : t % TYPE_STRIDE; }
 static inline int type_base(ValueType t) { return t - type_rank(t); }
+static inline bool mint_type(ValueType t) { return t >= VALUE_MINT && t < VALUE_ASSOC && !type_rank(t); }
+static inline bool assoc_type(ValueType t) { return t >= VALUE_ASSOC && !type_rank(t); }
+static inline AssocType assoc_info(Program *p, ValueType t) { return p->assocs[(t - VALUE_ASSOC)/TYPE_STRIDE]; }
 static inline bool graph_type(ValueType t) { return t == VALUE_GRAPH || t == VALUE_DIGRAPH; }
 
 
@@ -190,6 +202,7 @@ struct Expr{
 
     union {
         char *text;
+        struct { ValueType type; Expr *value; } residue;
         struct
         {
             long long number;

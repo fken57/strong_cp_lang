@@ -9,12 +9,12 @@ function escapeHtml(text) {
   return text.replace(/[&<>"']/g, (char) => ({"&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;"}[char]));
 }
 function syntax(text) {
-  const pattern = /("(?:\\.|[^"\\\n])*"|'(?:\\.|[^'\\\n])*'|\/\/[^\n]*|\b(?:struct|graph|digraph|edge|pair|cin|cout|fn|let|auto|if|else|while|for|rep|return|break|int|char|string|void)\b|\b(?:print|read_char|read_string|read_int|read_vec|array|len|push_back|push|pop|back|size|resize|clear|add|edge_count|sort|at_least|more_than|at_most|less_than|run_length)\b|\b[0-9]+\b)/g;
+  const pattern = /("(?:\\.|[^"\\\n])*"|'(?:\\.|[^'\\\n])*'|\/\/[^\n]*|\b(?:struct|mint|mint998|mint107|map|unordered_map|multi_map|unordered_multi_map|set|unordered_set|multi_set|unordered_multi_set|graph|digraph|edge|pair|cin|cout|fn|let|auto|if|else|while|for|rep|return|break|int|char|string|void)\b|\b(?:print|read_char|read_string|read_int|read_vec|array|len|push_back|push|pop|back|size|resize|clear|add|edge_count|sort|at_least|more_than|at_most|less_than|run_length|gcd|lcm|pow_mod|inv_mod|bfs|dijkstra|components|contains|insert|erase|keys|count|val|pow)\b|\b[0-9]+\b)/g;
   let result = "", end = 0;
   for (const match of text.matchAll(pattern)) {
     const token = match[0];
     const kind = token.startsWith("//") ? "comment" : /^["']/.test(token) ? "string" : /^[0-9]/.test(token) ? "number" :
-      /^(print|read_char|read_string|read_int|read_vec|array|len|push_back|push|pop|back|size|resize|clear|add|edge_count|sort|at_least|more_than|at_most|less_than|run_length)$/.test(token) ? "builtin" : "keyword";
+      /^(print|read_char|read_string|read_int|read_vec|array|len|push_back|push|pop|back|size|resize|clear|add|edge_count|sort|at_least|more_than|at_most|less_than|run_length|gcd|lcm|pow_mod|inv_mod|bfs|dijkstra|components|contains|insert|erase|keys|count|val|pow)$/.test(token) ? "builtin" : "keyword";
     result += escapeHtml(text.slice(end, match.index)) + '<span class="token-' + kind + '">' + escapeHtml(token) + "</span>";
     end = match.index + token.length;
   }
@@ -318,7 +318,8 @@ async function convert() {
     if (data.diagnostics.length) { showToast("エラーを修正すると C++ に変換できます。"); return; }
     state.cpp = data.cpp; state.compiledVersion = version;
     $("output-empty").hidden = true; $("output-content").hidden = false;
-    const marker = data.cpp.indexOf("#endif\n");
+    const guardEnd = data.cpp.indexOf("\n#endif\n");
+    const marker = guardEnd < 0 ? -1 : guardEnd + 1;
     $("runtime-code").textContent = marker >= 0 ? data.cpp.slice(0, marker + 7) : "";
     $("runtime").hidden = marker < 0;
     $("output-code").textContent = marker >= 0 ? data.cpp.slice(marker + 7).trimStart() : data.cpp;

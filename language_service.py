@@ -10,7 +10,19 @@ from compiler import build_compiler
 MAX_SOURCE_BYTES = 256 * 1024
 TIMEOUT_SECONDS = 2
 
+MAP_TYPES = {"map", "unordered_map", "multi_map", "unordered_multi_map", "multimap", "unordered_multimap"}
+SET_TYPES = {"set", "unordered_set", "multi_set", "unordered_multi_set", "multiset", "unordered_multiset"}
+MOD_TYPES = {"mint", "mint998", "mint107"}
+DECLARED_TYPES = MAP_TYPES | SET_TYPES | MOD_TYPES | {"int", "char", "string", "pair", "void"}
+
 CATALOG = {
+    "gcd": (3, "gcd(a, b) -> int", "gcd(${1:a}, ${2:b})", "最大公約数を返します。"),
+    "lcm": (3, "lcm(a, b) -> int", "lcm(${1:a}, ${2:b})", "最小公倍数を返します。"),
+    "pow_mod": (3, "pow_mod(a, n, m) -> int", "pow_mod(${1:a}, ${2:n}, ${3:m})", "a の n 乗を法 m で計算します。"),
+    "inv_mod": (3, "inv_mod(a, m) -> int", "inv_mod(${1:a}, ${2:m})", "法 m における a の逆元を求めます。"),
+    "mint998": (14, "mint998", "mint998", "法 998244353 の剰余環型です。"),
+    "mint107": (14, "mint107", "mint107", "法 1000000007 の剰余環型です。"),
+    "mint": (14, "mint<M>", "mint<${1:M}>", "正の整数リテラル M を法にします。"),
     "char": (14, "char", "char", "1 バイトの文字型です。"),
     "string": (14, "string = char[]", "string", "可変長の文字列型です。"),
     "read_char": (3, "read_char() -> char", "read_char()", "空白を飛ばして 1 バイト読みます。"),
@@ -29,7 +41,7 @@ CATALOG = {
     "print": (3, "print(value) -> void", "print(${1:value});", "値または配列を改行付きで出力します。"),
     "rep": (15, "rep(i, start, end)", "rep(${1:i}, ${2:0}, ${3:n}) {\n    $0\n}", "終点を含まない for の短縮形です。"),
     "for": (15, "for (init; condition; step)", "for (int i = ${1:0}; i < ${2:n}; i++) {\n    $0\n}", "初期化・条件・更新を指定するループです。各節を省略できます。"),
-    "fn": (15, "fn name() -> int", "fn ${1:name}() {\n    return ${2:0};\n}", "トップレベルに関数を定義します。型を省略すると int です。"),
+    "fn": (15, "fn name() -> int", "int ${1:name}() {\n    return ${2:0};\n}", "トップレベルに関数を定義します。型を省略すると int です。"),
     "if": (15, "if (condition)", "if (${1:condition}) {\n    $0\n}", "条件に応じてブロックを実行します。"),
     "while": (15, "while (condition)", "while (${1:condition}) {\n    $0\n}", "条件が真の間、ブロックを繰り返します。"),
     "let": (14, "let name = value;", "let ", "変数を宣言します。旧構文です。既存コード向けに型推論を維持します。"),
@@ -41,6 +53,11 @@ CATALOG = {
     "break": (14, "break;", "break;", "最も内側の for / while / rep を抜けます。"),
     "void": (14, "void", "void", "戻り値のない関数の型です。"),
 }
+
+
+for name in sorted(MAP_TYPES | SET_TYPES):
+    types = "<${1:int}, ${2:int}>" if name in MAP_TYPES else "<${1:int}>"
+    CATALOG[name] = (14, name + "<...>", name + types, "添字でアクセスできる連想コンテナです。")
 
 
 VECTOR_METHODS = {
@@ -173,12 +190,16 @@ class DocumentIndex:
         for name, args in (("add", "u, v, cost = 1"), ("size", ""), ("edge_count", "")):
             insert = "add(${1:u}, ${2:v})" if name == "add" else name + "()"
             self.members["graph"][name] = self.member(name, 2, f"{name}({args}) -> int", insert, "int")
+        for name in ("bfs", "dijkstra"):
+            self.members["graph"][name] = self.member(name, 2, name + "(source: int) -> int[]",
+                                                      name + "(${1:source})", "int[]")
         self.members["digraph"] = self.members["graph"].copy()
         self.members["graph"]["diameter"] = self.member(
             "diameter", 5, "diameter → (dist, one, two)", "diameter", "<tree diameter>")
         self.members["<tree diameter>"] = {
             name: self.member(name, 5, "int " + name, name, "int") for name in ("dist", "one", "two")
         }
+        self.members["graph"]["components"] = self.member("components", 2, "components() -> int[]", "components()", "int[]")
         for name in ("to", "cost", "id"):
             self.members["edge"][name] = self.member(name, 5, "int " + name, name, "int")
         for i in range(len(tokens)-2):
@@ -187,69 +208,31 @@ class DocumentIndex:
             members = self.members.setdefault(tokens[i+1]["text"], {})
             j, limit = i+3, self.pairs.get(i+2, len(tokens))
             while j+1 < limit:
-                if tokens[j]["kind"] == "TK_FN":
-                    name = tokens[j+1]["text"]
-                    close = self.pairs.get(j+2)
-                    if close is None: break
-                    detail = source[tokens[j]["start"]:tokens[close]["end"]]
-                    k, result = close+1, "void"
-                    if k+1 < limit and tokens[k]["kind"] == "TK_ARROW":
-                        result, k = self.read_type(k+1, limit)
-                    args = [tokens[q]["text"] for q in range(j+3, close)
-                            if tokens[q]["kind"] == "TK_IDENT" and (q == j+3 or tokens[q-1]["text"] == ",")]
-                    insert = name + "(" + ", ".join("${%d:%s}" % (n+1, arg) for n, arg in enumerate(args)) + ")"
-                    members[name] = self.member(name, 2, detail + " -> " + result, insert, result)
-                    if k < len(tokens) and tokens[k]["kind"] == "TK_LBRACE":
-                        self.method_scopes[tokens[j]["start"]] = tokens[i+1]["text"]
-                    if k not in self.pairs: break
-                    j = self.pairs[k]+1
+                method = self.read_function(j, limit, method=True)
+                if method:
+                    name, signature_end, body, result, params, _, detail = method
+                    insert = self.function_insert(name["text"], params)
+                    members[name["text"]] = self.member(name["text"], 2, detail, insert, result)
+                    self.method_scopes[tokens[j]["start"]] = tokens[i+1]["text"]
+                    j = body + 1
                 else:
                     result, j = self.read_type(j, limit)
-                    if j >= limit or tokens[j]["kind"] != "TK_IDENT": break
+                    if j >= limit or tokens[j]["kind"] != "TK_IDENT":
+                        break
                     name = tokens[j]["text"]
                     members[name] = self.member(name, 5, result + " " + name, name, result)
                     j += 2
         self.functions = []
         for i, token in enumerate(tokens):
-            if token["kind"] != "TK_FN" or i + 2 >= len(tokens):
-                continue
             if token["start"] not in self.method_scopes and any(start < token["start"] < end for start, end in self.blocks[1:]):
                 continue
-            name, opening = tokens[i + 1], i + 2
-            if name["kind"] != "TK_IDENT" or tokens[opening]["kind"] != "TK_LPAREN":
+            parsed = self.read_function(i, len(tokens))
+            if not parsed:
                 continue
-            close = self.pairs.get(opening, len(tokens))
-            params = []
-            j = opening + 1
-            while j < close:
-                if tokens[j]["kind"] != "TK_IDENT":
-                    break
-                param = {"name": tokens[j]["text"], "token": tokens[j], "type": "int", "ref": False}
-                j += 1
-                if j < close and tokens[j]["kind"] == "TK_COLON":
-                    j += 1
-                    if j < close and tokens[j]["kind"] == "TK_AMP":
-                        param["ref"] = True
-                        j += 1
-                    if j < close:
-                        param["type"], j = self.read_type(j, close)
-                params.append(param)
-                if j >= close or tokens[j]["kind"] != "TK_COMMA":
-                    break
-                j += 1
-            j, return_type = close + 1, "void" if token["start"] in self.method_scopes else "int"
-            if j < len(tokens) and tokens[j]["kind"] == "TK_ARROW":
-                j += 1
-                if j < len(tokens):
-                    return_type, j = self.read_type(j, len(tokens))
-            body = None
-            if j < len(tokens) and tokens[j]["kind"] == "TK_LBRACE":
-                closed = self.pairs.get(j)
-                body = (tokens[j]["start"], tokens[closed]["start"] if closed is not None else eof)
-            signature = ", ".join(p["name"] + ": " + ("&" if p["ref"] else "") + p["type"] for p in params)
+            name, opening, close, result, params, _, detail = parsed
+            body = (tokens[opening]["start"], tokens[close]["start"] if close < len(tokens) else eof)
             self.functions.append({"name": name["text"], "token": name, "params": params,
-                                   "body": body, "return": return_type, "owner": token["start"],
-                                   "detail": f"fn {name['text']}({signature}) -> {return_type}"})
+                                   "body": body, "return": result, "owner": token["start"], "detail": detail})
         self.variables = []
         for function in self.functions:
             if function["body"]:
@@ -281,7 +264,7 @@ class DocumentIndex:
                                        "visible": start, "scope": start, "owner": self.owner(token["start"])})
         self.loop_ranges = [(tokens[close]["end"], end) for _, close, end in loops]
         for i, token in enumerate(tokens):
-            if token["kind"] not in ("TK_LET", "TK_AUTO", "TK_INT") and token["text"] not in self.members and token["text"] not in ("pair", "char", "string"):
+            if token["kind"] not in ("TK_LET", "TK_AUTO", "TK_INT") and token["text"] not in self.members and token["text"] not in DECLARED_TYPES:
                 continue
             if token["kind"] == "TK_AUTO" and i + 1 in self.pairs and tokens[i+1]["kind"] == "TK_LBRACKET":
                 close = self.pairs[i+1]
@@ -333,15 +316,80 @@ class DocumentIndex:
                 self.variables.append({"name": name, "type": value_type, "start": scope[0], "end": scope[1],
                                        "visible": semicolon["end"], "owner": owner, "scope": scope[0]})
 
+    @staticmethod
+    def function_insert(name, params):
+        arguments = ", ".join("${%d:%s}" % (i+1, p["name"]) for i, p in enumerate(params))
+        return name + "(" + arguments + ")"
+
+    def read_function(self, start, limit, method=False):
+        tokens = self.tokens
+        token = tokens[start]
+        legacy = token["kind"] == "TK_FN"
+        if legacy:
+            result, pos = ("void" if method or token["start"] in self.method_scopes else "int"), start + 1
+        elif token["text"] in DECLARED_TYPES or token["text"] in self.members:
+            result, pos = self.read_type(start, limit)
+        else:
+            return None
+        if pos + 1 >= limit or tokens[pos]["kind"] != "TK_IDENT" or tokens[pos+1]["kind"] != "TK_LPAREN":
+            return None
+        name = tokens[pos]
+        close = self.pairs.get(pos + 1)
+        if close is None:
+            return None
+        j, params = pos + 2, []
+        while j < close:
+            kind, ref = "int", False
+            type_first = not legacy or (tokens[j]["text"] in DECLARED_TYPES and
+                                         j+1 < close and tokens[j+1]["text"] not in (":", ","))
+            if type_first:
+                kind, j = self.read_type(j, close)
+                if j < close and tokens[j]["kind"] == "TK_AMP":
+                    ref, j = True, j+1
+            if j >= close or tokens[j]["kind"] != "TK_IDENT":
+                return None
+            param = tokens[j]
+            j += 1
+            if not type_first and j+1 < close and tokens[j]["kind"] == "TK_COLON":
+                j += 1
+                if tokens[j]["kind"] == "TK_AMP":
+                    ref, j = True, j+1
+                if j >= close:
+                    return None
+                kind, j = self.read_type(j, close)
+            params.append({"name": param["text"], "token": param, "type": kind, "ref": ref})
+            if j < close:
+                if tokens[j]["kind"] != "TK_COMMA":
+                    return None
+                j += 1
+        opening = close + 1
+        if legacy and opening+1 < limit and tokens[opening]["kind"] == "TK_ARROW":
+            result, opening = self.read_type(opening+1, limit)
+        if opening >= limit or tokens[opening]["kind"] != "TK_LBRACE":
+            return None
+        end = self.pairs.get(opening, limit)
+        detail = self.source[token["start"]:tokens[opening]["start"]].strip()
+        if legacy and "->" not in detail:
+            detail += " -> " + result
+        return name, opening, end, result, params, legacy, detail
+
     def read_type(self, start, end):
         tokens = self.tokens
         name = tokens[start]["text"]
         if name == "string": name = "char[]"
         pos = start + 1
-        if name == "pair" and pos + 5 <= end:
-            if [token["text"] for token in tokens[pos:pos+5]] == ["<", "int", ",", "int", ">"]:
-                name = "pair<int,int>"
-                pos += 5
+        if name in (MAP_TYPES | SET_TYPES | {"mint", "pair"}) and pos + 1 < end and tokens[pos]["text"] == "<":
+            params = []
+            cursor = pos + 1
+            while cursor < end:
+                argument, cursor = self.read_type(cursor, end)
+                params.append(argument)
+                if cursor == end or tokens[cursor]["text"] != ",":
+                    break
+                cursor += 1
+            if cursor < end and tokens[cursor]["text"] == ">":
+                name += "<" + ",".join(params) + ">"
+                pos = cursor + 1
         while pos + 1 < end and tokens[pos]["kind"] == "TK_LBRACKET" and tokens[pos+1]["kind"] == "TK_RBRACKET":
             name += "[]"
             pos += 2
@@ -352,9 +400,30 @@ class DocumentIndex:
         return {"label": name, "kind": kind, "detail": detail, "insert": insert,
                 "documentation": detail, "priority": "0", "result": result}
 
+    @staticmethod
+    def container_parts(receiver):
+        outer, sep, parts = receiver.partition("<")
+        if not sep or not receiver.endswith(">") or outer not in MAP_TYPES | SET_TYPES:
+            return None
+        key, _, value = parts[:-1].partition(",")
+        return outer, key, value
+
     def member_items(self, receiver):
         if receiver in self.members:
             return {k: v.copy() for k, v in self.members[receiver].items()}
+        if receiver in MOD_TYPES - {"mint"} or re.fullmatch(r"mint<[0-9]+>", receiver):
+            return {"val": self.member("val", 2, "val() -> int", "val()", "int"),
+                    "pow": self.member("pow", 2, "pow(exponent: int)", "pow(${1:exponent})", receiver)}
+        parts = self.container_parts(receiver)
+        if parts:
+            outer, key, value = parts
+            insert = "insert(${1:key}, ${2:value})" if value else "insert(${1:key})"
+            members = {"keys": self.member("keys", 2, f"keys() -> {key}[]", "keys()", key+"[]"),
+                       "size": self.member("size", 2, "size() -> int", "size()", "int"),
+                       "insert": self.member("insert", 2, "insert(key" + (", value" if value else "") + ")", insert, "void")}
+            for name in ("count", "contains", "erase"):
+                members[name] = self.member(name, 2, f"{name}(key: {key}) -> int", name + "(${1:key})", "int")
+            return members
         return method_items(receiver)
 
     def expression_start(self, end):
@@ -419,13 +488,19 @@ class DocumentIndex:
                 result = self.visible(offset).get(value["text"], {}).get("type", "int")
         while pos < end:
             if tokens[pos]["kind"] == "TK_LBRACKET" and pos in self.pairs:
-                result = "edge[]" if result in ("graph", "digraph") else result[:-2] if result.endswith("[]") else "int"
+                parts = self.container_parts(result)
+                if parts:
+                    outer, _, value = parts
+                    result = (value + ("[]" if "multi" in outer else "")) if value else "int"
+                else:
+                    result = "edge[]" if result in ("graph", "digraph") else result[:-2] if result.endswith("[]") else "int"
                 pos = self.pairs[pos] + 1
             elif (tokens[pos]["kind"] == "TK_DOT" and pos + 2 < end and
                   tokens[pos + 2]["kind"] == "TK_LPAREN" and pos + 2 in self.pairs):
                 method = tokens[pos + 1]["text"]
-                if method in self.members.get(result, {}):
-                    result = self.members[result][method]["result"]
+                members = self.member_items(result)
+                if method in members and "result" in members[method]:
+                    result = members[method]["result"]
                 elif method in ("pop", "back"):
                     result = result[:-2] if result.endswith("[]") else "int"
                 elif result == "int[]" and method in INT_VECTOR_METHODS:
@@ -544,9 +619,9 @@ class LanguageService:
                            "documentation": "ユーザー定義構造体", "priority": "1"}
         for function in index.functions:
             if function["owner"] in index.method_scopes: continue
-            params = ", ".join("${" + str(i + 1) + ":" + p["name"] + "}" for i, p in enumerate(function["params"]))
+            insert = index.function_insert(function["name"], function["params"])
             items[function["name"]] = {"label": function["name"], "kind": 3, "detail": function["detail"],
-                                      "insert": function["name"] + "(" + params + ")",
+                                      "insert": insert,
                                       "documentation": "ユーザー定義関数。引数は左から右に評価されます。", "priority": "1"}
         for name, variable in index.visible(offset).items():
             items[name] = {"label": name, "kind": 6, "detail": variable["type"] + " " + name,

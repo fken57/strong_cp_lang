@@ -21,7 +21,16 @@ static const char *cpp_type(ValueType type) {
         case VALUE_EDGE: strcpy(element, "fken::Edge"); break;
         case VALUE_GRAPH: strcpy(element, "fken::Graph<false>"); break;
         case VALUE_DIGRAPH: strcpy(element, "fken::Graph<true>"); break;
-        default: snprintf(element, sizeof(element), "fken_record%d", (type_base(type)-VALUE_RECORD)/TYPE_STRIDE);
+        default:
+            if (type_base(type) >= VALUE_ASSOC) {
+                snprintf(element, sizeof(element), "FkenAssoc%d", (type_base(type)-VALUE_ASSOC)/TYPE_STRIDE);
+                break;
+            }
+            if (type_base(type) >= VALUE_MINT) {
+                snprintf(element, sizeof(element), "fken::Mint<FkenMod%d>", (type_base(type)-VALUE_MINT)/TYPE_STRIDE);
+                break;
+            }
+            snprintf(element, sizeof(element), "fken_record%d", (type_base(type)-VALUE_RECORD)/TYPE_STRIDE);
     }
     if (type_rank(type)) snprintf(name, sizeof(name), "fken::Vec<%d,%s>", type_rank(type), element);
     else snprintf(name, sizeof(name), "%s", element);
@@ -59,7 +68,7 @@ static size_t cpp_capture_path(const Expr *target) {
     if (target->type == EXPR_VARIABLE) return 0;
     if (target->type == EXPR_FIELD) return cpp_capture_path(target->data.field.owner);
     size_t count = cpp_capture_path(target->data.index.array);
-    printf("fken::Int fken_index%zu = ", count);
+    printf("%s fken_index%zu = ", cpp_type(target->data.index.index->value_type), count);
     cpp_expr(target->data.index.index);
     fputs("; ", stdout);
     // Recheck from the root: an index expression may resize an outer vector.
@@ -106,7 +115,7 @@ static void cpp_method(const Expr *expr) {
         fputs("); }())", stdout);
         return;
     }
-    bool graph = graph_type(receiver->value_type);
+    bool graph = graph_type(receiver->value_type) || mint_type(receiver->value_type) || assoc_type(receiver->value_type);
     if (graph) fputs("return ", stdout);
     else printf("return fken::%s(", expr->data.call.name);
     if (lvalue_root(receiver)) cpp_path(receiver, path_length);
@@ -119,6 +128,11 @@ static void cpp_method(const Expr *expr) {
 
 static void cpp_expr(const Expr *expr) {
     switch (expr->type) {
+        case EXPR_RESIDUE:
+            printf("%s(", cpp_type(expr->value_type));
+            cpp_expr(expr->data.residue.value);
+            putchar(')');
+            break;
         case EXPR_TEXT:
             if (expr->value_type == VALUE_CHAR) {
                 printf("'\\%03o'", (unsigned char)expr->data.text[0]);
@@ -154,6 +168,7 @@ static void cpp_expr(const Expr *expr) {
                 case TK_PLUS: op = "+"; break;
                 case TK_MINUS: op = "-"; break;
                 case TK_STAR: op = "*"; break;
+                case TK_PERCENT: op = "%"; break;
                 case TK_SLASH: op = "/"; break;
                 case TK_EQ: op = "=="; break;
                 case TK_NE: op = "!="; break;
@@ -167,9 +182,9 @@ static void cpp_expr(const Expr *expr) {
             const char *type = operand == VALUE_CHAR ? "unsigned char" : cpp_type(operand);
             printf("([&]() { %s fken_left = ", type);
             cpp_expr(expr->data.binary.left);
-            printf("; %s fken_right = ", type);
+            printf("; %s fken_right = ", operand == VALUE_CHAR ? "unsigned char" : cpp_type(operand));
             cpp_expr(expr->data.binary.right);
-            if (operand != VALUE_INT && expr->value_type == VALUE_INT)
+            if ((operand == VALUE_CHAR || operand == VALUE_STRING) && expr->value_type == VALUE_INT)
                 printf("; return fken::Int(fken_left %s fken_right); }())", op);
             else printf("; return fken_left %s fken_right; }())", op);
             break;
@@ -247,7 +262,7 @@ static void cpp_expr(const Expr *expr) {
             } else {
                 fputs("auto fken_array = ", stdout);
                 cpp_expr(expr->data.index.array);
-                fputs("; fken::Int fken_index = ", stdout);
+                printf("; %s fken_index = ", cpp_type(expr->data.index.index->value_type));
                 cpp_expr(expr->data.index.index);
                 fputs("; return fken::at(fken_array, fken_index); }())", stdout);
             }
@@ -267,12 +282,14 @@ static void cpp_assignment(const Statement *stmt) {
         case TK_PLUS_ASSIGN: case TK_INC: op = "+="; break;
         case TK_MINUS_ASSIGN: case TK_DEC: op = "-="; break;
         case TK_STAR_ASSIGN: op = "*="; break;
+        case TK_PERCENT_ASSIGN: op = "%="; break;
         case TK_SLASH_ASSIGN: op = "/="; break;
         default: error_at(stmt->token, "unsupported assignment");
     }
     printf("%s fken_value = ", cpp_type(target->value_type));
     if (stmt->data.assign.op == TK_INC || stmt->data.assign.op == TK_DEC) {
-        fputs("fken::Int(1)", stdout);
+        if (mint_type(target->value_type)) printf("%s(fken::Int(1))", cpp_type(target->value_type));
+        else fputs("fken::Int(1)", stdout);
     } else {
         cpp_expr(stmt->data.assign.value);
     }
@@ -393,6 +410,16 @@ void generate_cpp(const Program *program) {
     fputs("// Generated by fken_cpl. Compile with GCC/Clang C++20 and Boost headers.\n", stdout);
     fputs(cpp_runtime, stdout);
     putchar('\n');
+    for (size_t i = 0; i < program->modulus_count; ++i) {
+        printf("struct FkenMod%zu { static const fken::Int &value() { "
+               "static const auto m = fken::Int::parse(\"%s\"); return m; } };\n", i, program->moduli[i]);
+    }
+    for (size_t i = 0; i < program->record_count; ++i) printf("struct fken_record%zu;\n", i);
+    for (size_t i = 0; i < program->assoc_count; ++i) {
+        const AssocType a = program->assocs[i];
+        printf("using FkenAssoc%zu = fken::Associative<%d,%s,", i, a.kind, cpp_type(a.key));
+        printf("%s>;\n", cpp_type(a.value));
+    }
     for (size_t i = 0; i < program->record_count; ++i) {
         const Record *r = &program->records[i];
         printf("struct fken_record%zu {\n", i);

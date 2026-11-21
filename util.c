@@ -53,6 +53,17 @@ static const Expr *lvalue_root(const Expr *expr) {
     return expr && expr->type == EXPR_VARIABLE ? expr : NULL;
 }
 
+static int assoc_kind(const char *name) {
+    static const char *names[] = {"map", "unordered_map", "multi_map", "unordered_multi_map",
+                                  "set", "unordered_set", "multi_set", "unordered_multi_set"};
+    for (int i = 0; i < 8; ++i) if (!strcmp(name, names[i])) return i;
+    if (!strcmp(name, "multimap")) return 2;
+    if (!strcmp(name, "unordered_multimap")) return 3;
+    if (!strcmp(name, "multiset")) return 6;
+    if (!strcmp(name, "unordered_multiset")) return 7;
+    return -1;
+}
+
 const char *token_type_name(TokenType type) {
     switch (type) {
         case TK_INSERT: return "TK_INSERT";
@@ -77,6 +88,8 @@ const char *token_type_name(TokenType type) {
         case TK_PLUS:   return "TK_PLUS";
         case TK_MINUS:  return "TK_MINUS";
         case TK_STAR:   return "TK_STAR";
+        case TK_PERCENT: return "TK_PERCENT";
+        case TK_PERCENT_ASSIGN: return "TK_PERCENT_ASSIGN";
         case TK_SLASH:  return "TK_SLASH";
         case TK_INC: return "TK_INC";
         case TK_DEC: return "TK_DEC";

@@ -24,7 +24,7 @@ def main():
     modes.add_argument("--lsp", action="store_true", help="start the stdio language server")
     modes.add_argument("--web", action="store_true", help="start the local Web editor")
     parser.add_argument("--port", type=int, default=8765, help="local Web editor port")
-    parser.add_argument("--version", action="version", version="fken_cpl 0.8.0")
+    parser.add_argument("--version", action="version", version="fken_cpl 0.9.0")
     args = parser.parse_args()
     if args.web and not 0 <= args.port <= 65535:
         parser.error("--port must be between 0 and 65535")

@@ -12,7 +12,7 @@ for (int i = 0; i < n; i++) {
 print(total);
 ~~~
 
-- 変数宣言・代入、整数リテラル、`+ - * /`、単項 `-`
+- 変数宣言・代入、整数リテラル、`+ - * / %`、単項 `-`
 - 比較 `== != < <= > >=`（結果は整数の `0` または `1`）
 - `print`、`if / else`、`while`、C 形式の `for`、`rep`、`break`、ブロック、`//` コメント
 - 整数配列リテラル `[1, 2, 3]`、添字アクセスと要素更新 `a[i] = value`
@@ -68,6 +68,23 @@ print(grid[0][3]);       // 7
 ~~~
 
 ## 関数
+
+戻り値型を先に書く C 形式の関数宣言を使えます。参照引数は `int[]& values` のように `&` を付けます。
+構造体のメソッドにも同じ形式を使えます。既存の `fn name(a: int) -> int` 形式も有効です。
+
+```fken
+int twice(int a) {
+    return a * 2;
+}
+void append(int[]& values, int value) {
+    values.push(value);
+}
+
+int[] a;
+append(a, twice(21));
+print(a[0]);  // 42
+```
+
 
 ~~~text
 fn factorial(n) {
@@ -158,7 +175,7 @@ rep(i, 0, n) { print(a[i]); }
 - `-INT64_MIN`、`INT64_MIN / -1` も自動昇格します。
 - 巨大リテラルは桁を失わず読み込みます。先頭が `0` でも十進数です。
 - 結果が64bitに収まれば、64bit表現に戻します。
-- 除算はゼロ方向への切り捨てです。ゼロ除算は実行時エラーです。
+- 除算はゼロ方向への切り捨てです。剰余 `a % b` は `a - (a / b) * b` です。除数が 0 なら実行時エラーになります。
 
 タグの確認とオーバーフロー検出の分、通常の C++ の `int64_t` 演算にはないコストがあります。
 任意精度演算のコストは桁数にも依存します。
@@ -220,4 +237,55 @@ lines[1][0] = 'b';
 for (string line : lines) {
     cout << line << '\n';
 }
+```
+
+## 剰余環型
+
+`mint998` は `mint<998244353>`、`mint107` は `mint<1000000007>` の別名です。
+`mint<M>` の `M` は正の十進整数リテラルです。法が同じ型は同一型として扱います。
+
+`int` は代入や同じ式の演算で剰余環型に変換でき、値を `0` 以上 `M` 未満に正規化します。
+同じ法の値同士で `+`、`-`、`*`、`/`、`==`、`!=` を使えます。
+除算では除数の逆元を使い、除数と法が互いに素でなければ実行時エラーになります。
+`.val()` で値を `int` として取り出し、`.pow(n)` で非負整数乗を求めます。
+
+```fken
+mint998 x = -1;
+mint<998244353> y = x + 2;
+mint<15> z = 7;
+print(y.val());  // 1
+print(z / 2);    // 11
+```
+
+## 連想コンテナ
+
+| 型 | 添字アクセスの結果 |
+|---|---|
+| `map<K,V>`、`unordered_map<K,V>` | 値 `V` を読み書きします。存在しないキーには既定値を作ります |
+| `multi_map<K,V>`、`unordered_multi_map<K,V>` | 同じキーの値を追加順の `V[]` で返します。該当なしは空配列です |
+| `set<K>`、`unordered_set<K>` | キーがあれば `1`、なければ `0` を返します |
+| `multi_set<K>`、`unordered_multi_set<K>` | キーの出現回数を返します |
+
+キー型 `K` には `int`、`char`、`string` を使えます。
+map 系は `insert(key, value)`、set 系は `insert(key)` で追加します。
+一意キーの map に同じキーを挿入すると値を更新します。
+`count(key)` は出現回数、`contains(key)` は存在の有無を `0` または `1` で返します。
+`erase(key)` は同じキーの全要素を削除し、削除数を返します。`size()` は重複を含む要素数です。
+`keys()` は異なるキーを一つずつ返します。順序付きの型では昇順、ハッシュ型では順序未規定です。
+
+```fken
+map<string,int> counts;
+counts["cat"]++;
+counts["cat"] += 2;
+print(counts["cat"]);  // 3
+
+unordered_multi_map<int,string> labels;
+labels.insert(2, "red");
+labels.insert(2, "blue");
+print(labels[2]);  // red blue
+
+multi_set<int> values;
+values.insert(7);
+values.insert(7);
+print(values[7]);  // 2
 ```

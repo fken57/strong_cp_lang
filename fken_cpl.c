@@ -8,7 +8,8 @@
 
 static void destroy_expr(Expr *expr) {
     if (!expr) return;
-    if (expr->type == EXPR_TEXT) free(expr->data.text);
+    if (expr->type == EXPR_RESIDUE) destroy_expr(expr->data.residue.value);
+    else if (expr->type == EXPR_TEXT) free(expr->data.text);
     else if (expr->type == EXPR_BINARY) {
         destroy_expr(expr->data.binary.left);
         destroy_expr(expr->data.binary.right);
@@ -100,6 +101,27 @@ static Source read_source(FILE *file) {
     return source;
 }
 
+static void submission_header(const Source *source) {
+    fputs("// fken_cpl: https://github.com/fken57/strong_cp_lang\n", stdout);
+    fputs("// Converter source: https://github.com/fken57/strong_cp_lang/tree/deploy/neoshowcase\n", stdout);
+    fputs("// Original fken source:\n", stdout);
+    size_t start = 0;
+    while (start < source->length) {
+        size_t end = start;
+        while (end < source->length && source->data[end] != '\n' && source->data[end] != '\r') ++end;
+        fputs("// ", stdout);
+        fwrite(source->data + start, 1, end - start, stdout);
+        // A trailing backslash must never splice the next C++ line into the comment.
+        size_t tail = end;
+        while (tail > start && (source->data[tail-1] == ' ' || source->data[tail-1] == '\t')) --tail;
+        if (tail > start && source->data[tail-1] == '\\') fputs(" [end of line]", stdout);
+        putchar('\n');
+        if (end + 1 < source->length && source->data[end] == '\r' && source->data[end+1] == '\n') ++end;
+        start = end + 1;
+    }
+    fputs("// End original fken source.\n\n", stdout);
+}
+
 int main(int argc, char **argv) {
     bool plan = false, check = false, token_mode = false;
     const char *path = NULL, *code = NULL;
@@ -151,7 +173,10 @@ int main(int argc, char **argv) {
     Program *program = parse(tokens);
     analyze(program);
     if (plan) generate_plan(program);
-    else if (!check) generate_cpp(program);
+    else if (!check) {
+        submission_header(&source);
+        generate_cpp(program);
+    }
     for (size_t i = 0; i < program->count; i++) destroy_statement(program->statesments[i]);
     free(program->statesments);
     for (size_t i = 0; i < program->function_count; i++) {
@@ -163,6 +188,8 @@ int main(int argc, char **argv) {
     free(program->functions);
     for (size_t i = 0; i < program->record_count; ++i) free(program->records[i].fields);
     free(program->records);
+    free(program->moduli);
+    free(program->assocs);
     free(program);
     for (size_t i = 0; i < tokens->count; i++) free(tokens->tokens[i].text);
     free(tokens->tokens);

@@ -4,13 +4,18 @@ static const struct {
     const char *name;
     size_t min_args, max_args;
     ValueType argument, result;
+    bool can_shadow;
 } builtins[] = {
-    {"read_string", 0, 0, VALUE_INT, VALUE_STRING},
-    {"read_char", 0, 0, VALUE_INT, VALUE_CHAR},
-    {"read_int", 0, 0, VALUE_INT, VALUE_INT},
-    {"read_vec", 1, 1, VALUE_INT, VALUE_ARRAY},
-    {"array", 1, 2, VALUE_INT, VALUE_ARRAY},
-    {"len", 1, 1, VALUE_ARRAY, VALUE_INT},
+    {"gcd", 2, 2, VALUE_INT, VALUE_INT, true},
+    {"lcm", 2, 2, VALUE_INT, VALUE_INT, true},
+    {"pow_mod", 3, 3, VALUE_INT, VALUE_INT, true},
+    {"inv_mod", 2, 2, VALUE_INT, VALUE_INT, true},
+    {"read_string", 0, 0, VALUE_INT, VALUE_STRING, false},
+    {"read_char", 0, 0, VALUE_INT, VALUE_CHAR, false},
+    {"read_int", 0, 0, VALUE_INT, VALUE_INT, false},
+    {"read_vec", 1, 1, VALUE_INT, VALUE_ARRAY, false},
+    {"array", 1, 2, VALUE_INT, VALUE_ARRAY, false},
+    {"len", 1, 1, VALUE_ARRAY, VALUE_INT, false},
 };
 
 static void analyze_expr(Expr *expr, SymbolTable *symbols);
@@ -24,8 +29,18 @@ static Symbol *find_symbol(SymbolTable *symbols, const char *name, Token *token)
     error_at(token, "undefined variable '%s'", name);
 }
 
-static void expect_expr(Expr *expr, SymbolTable *symbols, ValueType expected) {
-    analyze_expr_as(expr, symbols, expected);
+static void convert_residue(Expr *expr, ValueType type) {
+    Expr *value = malloc(sizeof(*value));
+    if (!value) error_at(NULL, "out of memory");
+    *value = *expr;
+    expr->type = EXPR_RESIDUE;
+    expr->value_type = type;
+    expr->data.residue.type = type;
+    expr->data.residue.value = value;
+}
+
+static void require_type(Expr *expr, ValueType expected) {
+    if (mint_type(expected) && expr->value_type == VALUE_INT) convert_residue(expr, expected);
     if (expr->value_type != expected) {
         if (type_base(expected) >= VALUE_EDGE || type_base(expr->value_type) >= VALUE_EDGE)
             error_at(expr->token, "incompatible value type");
@@ -34,16 +49,22 @@ static void expect_expr(Expr *expr, SymbolTable *symbols, ValueType expected) {
     }
 }
 
+static void expect_expr(Expr *expr, SymbolTable *symbols, ValueType expected) {
+    analyze_expr_as(expr, symbols, expected);
+    require_type(expr, expected);
+}
+
 static void analyze_expr(Expr *expr, SymbolTable *symbols) {
     analyze_expr_as(expr, symbols, -2);
 }
 
-static bool writable(const Expr *expr) {
+static bool writable(const Expr *expr, Program *program) {
     while (expr->type == EXPR_FIELD || expr->type == EXPR_INDEX) {
         if (expr->type == EXPR_FIELD) expr = expr->data.field.owner;
         else {
             expr = expr->data.index.array;
-            if (graph_type(expr->value_type)) return false;
+            if (graph_type(expr->value_type) ||
+                (assoc_type(expr->value_type) && assoc_info(program, expr->value_type).kind >= 2)) return false;
         }
     }
     return expr->type == EXPR_VARIABLE;
@@ -56,7 +77,7 @@ static Record structure_fields(Program *program, ValueType type) {
     static Field diameter[] = {{"dist", VALUE_INT}, {"one", VALUE_INT}, {"two", VALUE_INT}};
     if (type == VALUE_DIAMETER) return (Record){.fields = diameter, .count = 3};
     if (type == VALUE_PAIR) return (Record){.fields = pair, .count = 2};
-    if (type >= VALUE_RECORD && !type_rank(type))
+    if (type >= VALUE_RECORD && type < VALUE_MINT && !type_rank(type))
         return program->records[(type - VALUE_RECORD) / TYPE_STRIDE];
     return (Record){0};
 }
@@ -65,6 +86,9 @@ static void analyze_expr_as(Expr *expr, SymbolTable *symbols, ValueType hint) {
     expr->value_type = VALUE_INT;
     switch (expr->type) {
         case EXPR_NUMBER: break;
+        case EXPR_RESIDUE:
+            expr->value_type = expr->data.residue.type;
+            break;
         case EXPR_TEXT:
             expr->value_type = expr->token->type == TK_CHAR ? VALUE_CHAR : VALUE_STRING;
             break;
@@ -79,16 +103,31 @@ static void analyze_expr_as(Expr *expr, SymbolTable *symbols, ValueType hint) {
             analyze_expr(left, symbols);
             ValueType type = left->value_type;
             TokenType op = expr->data.binary.op;
+            Expr *right = expr->data.binary.right;
+            analyze_expr(right, symbols);
+            if (mint_type(type) || mint_type(right->value_type)) {
+                if (!mint_type(type)) type = right->value_type;
+                require_type(left, type);
+                require_type(right, type);
+                if (op == TK_PLUS || op == TK_MINUS || op == TK_STAR || op == TK_SLASH)
+                    expr->value_type = type;
+                else if (op != TK_EQ && op != TK_NE)
+                    error_at(expr->token, "modular values support arithmetic and equality");
+                break;
+            }
             bool compares = op == TK_EQ || op == TK_NE || op == TK_LT || op == TK_LE || op == TK_GT || op == TK_GE;
             if (type != VALUE_INT && !((type == VALUE_STRING || type == VALUE_CHAR) && compares) &&
                 !(type == VALUE_STRING && op == TK_PLUS))
                 error_at(expr->token, "operator does not support this operand type");
-            expect_expr(expr->data.binary.right, symbols, type);
+            require_type(right, type);
             if (type == VALUE_STRING && op == TK_PLUS) expr->value_type = VALUE_STRING;
             break;
         }
         case EXPR_UNARY:
-            expect_expr(expr->data.unary.operand, symbols, VALUE_INT);
+            analyze_expr(expr->data.unary.operand, symbols);
+            expr->value_type = expr->data.unary.operand->value_type;
+            if (expr->value_type != VALUE_INT && !mint_type(expr->value_type))
+                error_at(expr->token, "unary minus requires an integer or modular value");
             break;
         case EXPR_CONSTRUCT:
             expr->value_type = expr->data.construct.type;
@@ -154,6 +193,12 @@ static void analyze_expr_as(Expr *expr, SymbolTable *symbols, ValueType hint) {
         }
         case EXPR_INDEX:
             analyze_expr(expr->data.index.array, symbols);
+            if (assoc_type(expr->data.index.array->value_type)) {
+                AssocType a = assoc_info(symbols->program, expr->data.index.array->value_type);
+                expect_expr(expr->data.index.index, symbols, a.key);
+                expr->value_type = a.kind >= 4 ? VALUE_INT : a.value + (a.kind >= 2);
+                break;
+            }
             if (!type_rank(expr->data.index.array->value_type) && !graph_type(expr->data.index.array->value_type)) error_at(expr->token, "cannot index a non-array value");
             expect_expr(expr->data.index.index, symbols, VALUE_INT);
             expr->value_type = graph_type(expr->data.index.array->value_type) ? VALUE_EDGE + 1 : expr->data.index.array->value_type - 1;
@@ -163,7 +208,38 @@ static void analyze_expr_as(Expr *expr, SymbolTable *symbols, ValueType hint) {
             if (expr->data.call.receiver) {
                 Expr *receiver = expr->data.call.receiver;
                 analyze_expr(receiver, symbols);
-                if (receiver->value_type >= VALUE_RECORD && !type_rank(receiver->value_type)) {
+                if (assoc_type(receiver->value_type)) {
+                    AssocType a = assoc_info(symbols->program, receiver->value_type);
+                    const char *name = expr->data.call.name;
+                    size_t n = expr->data.call.count;
+                    if (!strcmp(name, "size") && n == 0) return;
+                    if (!strcmp(name, "keys") && n == 0) { expr->value_type = a.key + 1; return; }
+                    if ((!strcmp(name, "count") || !strcmp(name, "contains") || !strcmp(name, "erase")) && n == 1) {
+                        if (!strcmp(name, "erase") && !writable(receiver, symbols->program))
+                            error_at(expr->token, "erase requires a writable container");
+                        expect_expr(expr->data.call.args[0], symbols, a.key);
+                        return;
+                    }
+                    if (!strcmp(name, "insert") && n == (a.kind < 4 ? 2u : 1u)) {
+                        if (!writable(receiver, symbols->program)) error_at(expr->token, "insert requires a writable container");
+                        expect_expr(expr->data.call.args[0], symbols, a.key);
+                        if (a.kind < 4) expect_expr(expr->data.call.args[1], symbols, a.value);
+                        expr->value_type = VALUE_VOID;
+                        return;
+                    }
+                    error_at(expr->token, "invalid associative container method '%s'", name);
+                }
+                if (mint_type(receiver->value_type)) {
+                    const char *name = expr->data.call.name;
+                    if (!strcmp(name, "val") && !expr->data.call.count) return;
+                    if (!strcmp(name, "pow") && expr->data.call.count == 1) {
+                        expect_expr(expr->data.call.args[0], symbols, VALUE_INT);
+                        expr->value_type = receiver->value_type;
+                        return;
+                    }
+                    error_at(expr->token, "expected val() or pow(exponent)");
+                }
+                if (receiver->value_type >= VALUE_RECORD && receiver->value_type < VALUE_MINT && !type_rank(receiver->value_type)) {
                     for (size_t i = 0; i < symbols->program->function_count; ++i) {
                         Function *f = symbols->program->functions[i];
                         if (f->owner != receiver->value_type || strcmp(f->name, expr->data.call.name)) continue;
@@ -187,8 +263,17 @@ static void analyze_expr_as(Expr *expr, SymbolTable *symbols, ValueType hint) {
                         expr->value_type = VALUE_DIAMETER;
                         return;
                     }
+                    if ((!strcmp(name, "bfs") || !strcmp(name, "dijkstra")) && n == 1) {
+                        expect_expr(expr->data.call.args[0], symbols, VALUE_INT);
+                        expr->value_type = VALUE_ARRAY;
+                        return;
+                    }
+                    if (!strcmp(name, "components") && receiver->value_type == VALUE_GRAPH && n == 0) {
+                        expr->value_type = VALUE_ARRAY;
+                        return;
+                    }
                     if (!strcmp(name, "add")) {
-                        if (!writable(receiver) || n < 2 || n > 3)
+                        if (!writable(receiver, symbols->program) || n < 2 || n > 3)
                             error_at(expr->token, "graph.add requires a writable graph and 2 or 3 arguments");
                         for (size_t i = 0; i < n; ++i) expect_expr(expr->data.call.args[i], symbols, VALUE_INT);
                     } else if (n || (strcmp(name, "size") && strcmp(name, "edge_count"))) {
@@ -221,7 +306,7 @@ static void analyze_expr_as(Expr *expr, SymbolTable *symbols, ValueType hint) {
                 if (expr->data.call.count < min_args || expr->data.call.count > max_args) {
                     error_at(expr->token, "wrong number of arguments to vector method '%s'", name);
                 }
-                if (mutates && !writable(receiver)) error_at(expr->token, "mutating method receiver must be a variable or indexed variable");
+                if (mutates && !writable(receiver, symbols->program)) error_at(expr->token, "mutating method receiver must be a variable or indexed variable");
                 for (size_t i = 0; i < expr->data.call.count; i++) {
                     ValueType expected = strcmp(name, "resize") == 0 && i == 0 ? VALUE_INT : receiver->value_type - 1;
                     expect_expr(expr->data.call.args[i], symbols, expected);
@@ -326,18 +411,19 @@ static void analyze_statement(Statement *stmt, int *offset, SymbolTable *symbols
                 stmt->data.assign.target = target;
             }
             analyze_expr(stmt->data.assign.target, symbols);
-            if (!writable(stmt->data.assign.target)) error_at(stmt->token, "graph adjacency is read-only");
+            if (!writable(stmt->data.assign.target, symbols->program)) error_at(stmt->token, "assignment target is read-only");
             ValueType type = stmt->data.assign.target->value_type;
             TokenType op = stmt->data.assign.op;
             if (stmt->data.assign.stream_input) {
                 Expr *read = stmt->data.assign.value;
                 if (type == VALUE_STRING) read->data.call.name = "read_string";
                 else if (type == VALUE_CHAR) read->data.call.name = "read_char";
-                else if (type != VALUE_INT) error_at(stmt->token, "cin requires an int, char or string destination");
+                else if (type != VALUE_INT && !mint_type(type)) error_at(stmt->token, "cin requires an int, char or string destination");
             }
-            if (op != TK_ASSIGN && type != VALUE_INT && !(op == TK_PLUS_ASSIGN && type == VALUE_STRING)) {
+            if (op != TK_ASSIGN && type != VALUE_INT && !mint_type(type) && !(op == TK_PLUS_ASSIGN && type == VALUE_STRING)) {
                 error_at(stmt->token, "updates require an integer target");
             }
+            if (op == TK_PERCENT_ASSIGN && mint_type(type)) error_at(stmt->token, "remainder requires integers");
             if (op != TK_INC && op != TK_DEC) {
                 expect_expr(stmt->data.assign.value, symbols, type);
             }
@@ -361,7 +447,7 @@ static void analyze_statement(Statement *stmt, int *offset, SymbolTable *symbols
         case STMT_WRITE: {
             analyze_expr(stmt->data.write.value, symbols);
             ValueType type = stmt->data.write.value->value_type;
-            if (type != VALUE_INT && type != VALUE_CHAR && type != VALUE_STRING)
+            if (type != VALUE_INT && type != VALUE_CHAR && type != VALUE_STRING && !mint_type(type))
                 error_at(stmt->token, "cout requires an int, char or string");
             break;
         }
@@ -369,7 +455,7 @@ static void analyze_statement(Statement *stmt, int *offset, SymbolTable *symbols
             analyze_expr(stmt->data.print.expression, symbols);
             if (stmt->data.print.expression->value_type == VALUE_VOID) error_at(stmt->token, "cannot print a void result");
             if (type_base(stmt->data.print.expression->value_type) != VALUE_INT &&
-                type_base(stmt->data.print.expression->value_type) != VALUE_CHAR)
+                type_base(stmt->data.print.expression->value_type) != VALUE_CHAR && !mint_type(stmt->data.print.expression->value_type))
                 error_at(stmt->token, "print requires integers, text or arrays of those types");
             break;
         case STMT_DECLARATIONS:
@@ -462,7 +548,7 @@ void analyze(Program *program) {
             }
         }
         for (size_t j = 0; j < sizeof(builtins) / sizeof(*builtins); j++) {
-            if (!function->owner && strcmp(function->name, builtins[j].name) == 0) {
+            if (!function->owner && !builtins[j].can_shadow && strcmp(function->name, builtins[j].name) == 0) {
                 error_at(function->token, "cannot redefine builtin '%s'", function->name);
             }
         }

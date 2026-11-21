@@ -51,6 +51,34 @@ class CppE2E(unittest.TestCase):
         )
         self.assertEqual(built.returncode, 0, built.stderr)
 
+    def test_submission_arithmetic_graphs_and_associative_containers(self):
+        source = r"""
+// Preserve a source comment with a C++ line-continuation marker: \
+int twice(int a) { return a + a; }
+void add(map<string,mint<13>>& scores) { scores["cat"] += 4; }
+map<string,mint<13>> scores;
+add(scores);
+print(scores["cat"].val());
+mint<998244353> a = -2;
+mint998 b = a.pow(2) / 2;
+b++;
+print(b.val()); print(twice(gcd(12, -16))); print(-17 % 5); print(pow_mod(-2,3,11));
+graph G(4);
+G.add(0,1,5); G.add(1,2,2); G.add(0,2,8);
+print(G.bfs(0)); print(G.dijkstra(0)); print(G.components());
+unordered_map<int,string> u; u[9223372036854775808] = "large"; print(u[9223372036854775808]);
+multi_map<int,int> m; m.insert(2,5); m.insert(2,6); print(m[2]);
+unordered_multi_map<char,char> c; c.insert('k','x'); c.insert('k','y'); print(c['k']);
+set<int> s; s.insert(5); s.insert(1); print(s.keys());
+unordered_set<int> us; us.insert(5); print(us[5]);
+multi_set<int> ms; ms.insert(6); ms.insert(6); print(ms[6]);
+unordered_multi_set<char> ums; ums.insert('a'); ums.insert('a'); print(ums.erase('a'));
+"""
+        result = subprocess.run([str(CLI), "--code", source], capture_output=True, text=True, check=True)
+        self.assertTrue(result.stdout.startswith("// fken_cpl: https://github.com/fken57/strong_cp_lang\n"))
+        self.assertIn("// int twice(int a) { return a + a; }", result.stdout)
+        self.assert_output(source, "4\n3\n8\n-2\n3\n0 1 1 -1\n0 5 7 -1\n0 0 0 1\nlarge\n5 6\nxy\n1 5\n1\n2\n2\n")
+
     def test_char_string_and_string_vectors(self):
         self.assert_output(r"""
 string s = "かな";

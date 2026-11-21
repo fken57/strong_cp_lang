@@ -227,10 +227,10 @@ Expr* parse_multiplicative(TokenArray* tokens, int begin, int end){
             }
             return expr;
         }
-        else if(tokens->tokens[i].type == TK_SLASH){
+        else if(tokens->tokens[i].type == TK_SLASH || tokens->tokens[i].type == TK_PERCENT){
             expr->type = EXPR_BINARY;
             expr->token = &tokens->tokens[i];
-            expr->data.binary.op = TK_SLASH;
+            expr->data.binary.op = tokens->tokens[i].type;
             expr->data.binary.left = parse_multiplicative(tokens, begin, i);
             expr->data.binary.right = parse_unary(tokens, i+1, end);
             if(expr->data.binary.left == NULL || expr->data.binary.right == NULL){
@@ -432,7 +432,7 @@ static Statement *parse_assignment_range(TokenArray *tokens, int begin, int end)
         return statement;
     }
     if (op != TK_ASSIGN && op != TK_PLUS_ASSIGN && op != TK_MINUS_ASSIGN &&
-        op != TK_STAR_ASSIGN && op != TK_SLASH_ASSIGN) {
+        op != TK_STAR_ASSIGN && op != TK_SLASH_ASSIGN && op != TK_PERCENT_ASSIGN) {
         parse_error(tokens, begin - 1, "expected assignment operator");
     }
     statement->data.assign.value = parse_equality(tokens, begin, end);
@@ -496,7 +496,7 @@ static Statement *parse_effect_range(TokenArray *tokens, int begin, int end) {
         if (kind == TK_RPAREN || kind == TK_RBRACKET || kind == TK_RBRACE) depth--;
         if (depth == 0 && (kind == TK_ASSIGN || kind == TK_INC || kind == TK_DEC ||
             kind == TK_PLUS_ASSIGN || kind == TK_MINUS_ASSIGN ||
-            kind == TK_STAR_ASSIGN || kind == TK_SLASH_ASSIGN)) {
+            kind == TK_STAR_ASSIGN || kind == TK_SLASH_ASSIGN || kind == TK_PERCENT_ASSIGN)) {
             return parse_assignment_range(tokens, begin, end);
         }
     }
@@ -542,11 +542,39 @@ static ValueType named_type(Program *program, const char *name) {
     return VALUE_VOID;
 }
 
+static ValueType modular_type(Program *program, const char *value, Token *token) {
+    while (*value == '0') ++value;
+    if (!*value) error_at(token, "modulus must be positive");
+    for (size_t i = 0; i < program->modulus_count; ++i)
+        if (!strcmp(program->moduli[i], value)) return VALUE_MINT + (int)i * TYPE_STRIDE;
+    if (program->modulus_count == 8192) error_at(token, "too many moduli");
+    size_t i = program->modulus_count++;
+    program->moduli = realloc(program->moduli, (i + 1) * sizeof(*program->moduli));
+    if (!program->moduli) error_at(NULL, "out of memory");
+    program->moduli[i] = value;
+    return VALUE_MINT + (int)i * TYPE_STRIDE;
+}
+
+static ValueType associative_type(Program *p, AssocType type, Token *token) {
+    for (size_t i = 0; i < p->assoc_count; ++i) {
+        const AssocType a = p->assocs[i];
+        if (a.kind == type.kind && a.key == type.key && a.value == type.value)
+            return VALUE_ASSOC + (int)i * TYPE_STRIDE;
+    }
+    if (p->assoc_count == 8192) error_at(token, "too many associative container types");
+    size_t i = p->assoc_count++;
+    p->assocs = realloc(p->assocs, (i + 1) * sizeof(*p->assocs));
+    if (!p->assocs) error_at(NULL, "out of memory");
+    p->assocs[i] = type;
+    return VALUE_ASSOC + (int)i * TYPE_STRIDE;
+}
+
 static bool declaration_start(TokenArray *tokens, int i) {
     Token *t = &tokens->tokens[i];
     return t->type == TK_LET || t->type == TK_AUTO || t->type == TK_INT ||
            (t->type == TK_IDENT && (named_type(tokens->program, t->text) != VALUE_VOID ||
-            (!strcmp(t->text, "pair") && tokens->tokens[i+1].type == TK_LT)));
+            (!strcmp(t->text, "mint998") || !strcmp(t->text, "mint107")) ||
+            ((!strcmp(t->text, "pair") || !strcmp(t->text, "mint") || assoc_kind(t->text) >= 0) && tokens->tokens[i+1].type == TK_LT)));
 }
 
 static ValueType parse_type(TokenArray *tokens, int *pos, int end, bool allow_void);
@@ -1033,6 +1061,15 @@ static ValueType parse_type(TokenArray *tokens, int *pos, int end, bool allow_vo
     Token *token = &tokens->tokens[(*pos)++];
     if (strcmp(token->text, "void") == 0 && allow_void) return VALUE_VOID;
     ValueType type = named_type(tokens->program, token->text);
+    if (!strcmp(token->text, "mint998")) type = modular_type(tokens->program, "998244353", token);
+    else if (!strcmp(token->text, "mint107")) type = modular_type(tokens->program, "1000000007", token);
+    else if (!strcmp(token->text, "mint")) {
+        if (*pos + 2 >= end || tokens->tokens[*pos].type != TK_LT ||
+            tokens->tokens[*pos+1].type != TK_NUMBER || tokens->tokens[*pos+2].type != TK_GT)
+            parse_error(tokens, *pos, "expected mint<positive integer>");
+        type = modular_type(tokens->program, tokens->tokens[*pos+1].text, token);
+        *pos += 3;
+    }
     if (!strcmp(token->text, "pair")) {
         const TokenType syntax[] = {TK_LT, TK_INT, TK_COMMA, TK_INT, TK_GT};
         for (size_t i = 0; i < sizeof(syntax)/sizeof(*syntax); ++i) {
@@ -1041,6 +1078,23 @@ static ValueType parse_type(TokenArray *tokens, int *pos, int end, bool allow_vo
             ++*pos;
         }
         type = VALUE_PAIR;
+    }
+    int kind = assoc_kind(token->text);
+    if (kind >= 0) {
+        if (*pos >= end || tokens->tokens[(*pos)++].type != TK_LT)
+            parse_error(tokens, *pos - 1, "expected '<' after container type");
+        ValueType key = parse_type(tokens, pos, end, false);
+        if (key != VALUE_INT && key != VALUE_CHAR && key != VALUE_STRING)
+            error_at(token, "container keys must be int, char or string");
+        ValueType value = key;
+        if (kind < 4) {
+            if (*pos >= end || tokens->tokens[(*pos)++].type != TK_COMMA)
+                parse_error(tokens, *pos - 1, "map requires key and value types");
+            value = parse_type(tokens, pos, end, false);
+        }
+        if (*pos >= end || tokens->tokens[(*pos)++].type != TK_GT)
+            parse_error(tokens, *pos - 1, "expected '>' after container type");
+        type = associative_type(tokens->program, (AssocType){kind, key, value}, token);
     }
     if (type == VALUE_VOID) error_at(token, "unknown or invalid type '%s'", token->text);
     while (*pos < end && tokens->tokens[*pos].type == TK_LBRACKET) {
@@ -1060,8 +1114,13 @@ static Function *parse_function(TokenArray *tokens, int *pos, ValueType owner) {
     if (!function) error_at(NULL, "out of memory");
     function->token = &tokens->tokens[*pos];
     function->owner = owner;
-    function->return_type = owner ? VALUE_VOID : VALUE_INT;
-    (*pos)++;
+    const bool legacy = function->token->type == TK_FN;
+    if (legacy) {
+        function->return_type = owner ? VALUE_VOID : VALUE_INT;
+        ++*pos;
+    } else {
+        function->return_type = parse_type(tokens, pos, (int)tokens->count, true);
+    }
     if ((size_t)*pos >= tokens->count || tokens->tokens[*pos].type != TK_IDENT) {
         parse_error(tokens, *pos, "expected function name");
     }
@@ -1077,16 +1136,26 @@ static Function *parse_function(TokenArray *tokens, int *pos, ValueType owner) {
     }
     if (owner) function->params[function->count++] = (Parameter){.name="self", .token=function->token, .type=owner, .by_ref=true};
     while (*pos < close) {
-        if (tokens->tokens[*pos].type != TK_IDENT) parse_error(tokens, *pos, "expected parameter name");
         Parameter *param = &function->params[function->count++];
-        param->token = &tokens->tokens[*pos];
-        param->name = tokens->tokens[(*pos)++].text;
+        bool type_first = !legacy || (declaration_start(tokens, *pos) && *pos + 1 < close &&
+                                      tokens->tokens[*pos+1].type != TK_COLON && tokens->tokens[*pos+1].type != TK_COMMA);
         param->type = VALUE_INT;
-        if (*pos < close && tokens->tokens[*pos].type == TK_COLON) {
-            (*pos)++;
+        if (type_first) {
+            param->type = parse_type(tokens, pos, close, false);
             if (*pos < close && tokens->tokens[*pos].type == TK_AMP) {
                 param->by_ref = true;
-                (*pos)++;
+                ++*pos;
+            }
+        }
+        if (*pos >= close || tokens->tokens[*pos].type != TK_IDENT)
+            parse_error(tokens, *pos, "expected parameter name");
+        param->token = &tokens->tokens[*pos];
+        param->name = tokens->tokens[(*pos)++].text;
+        if (!type_first && *pos < close && tokens->tokens[*pos].type == TK_COLON) {
+            ++*pos;
+            if (*pos < close && tokens->tokens[*pos].type == TK_AMP) {
+                param->by_ref = true;
+                ++*pos;
             }
             param->type = parse_type(tokens, pos, close, false);
         }
@@ -1096,12 +1165,23 @@ static Function *parse_function(TokenArray *tokens, int *pos, ValueType owner) {
         if (*pos == close) parse_error(tokens, *pos, "expected parameter after ','");
     }
     *pos = close + 1;
-    if ((size_t)*pos < tokens->count && tokens->tokens[*pos].type == TK_ARROW) {
+    if (legacy && (size_t)*pos < tokens->count && tokens->tokens[*pos].type == TK_ARROW) {
         (*pos)++;
         function->return_type = parse_type(tokens, pos, (int)tokens->count, true);
     }
     function->body = parse_block(tokens, pos);
     return function;
+}
+
+static bool function_start(TokenArray *tokens, int pos) {
+    Token *t = &tokens->tokens[pos];
+    if (t->type == TK_FN) return true;
+    if (!declaration_start(tokens, pos) && strcmp(t->text, "void")) return false;
+    if (t->type == TK_LET || t->type == TK_AUTO) return false;
+    parse_type(tokens, &pos, (int)tokens->count, true);
+    if (tokens->tokens[pos].type != TK_IDENT || tokens->tokens[pos+1].type != TK_LPAREN) return false;
+    int close = matching_close(tokens, pos+1, (int)tokens->count);
+    return tokens->tokens[close+1].type == TK_LBRACE;
 }
 
 static void add_function(TokenArray *tokens, int *pos, ValueType owner) {
@@ -1119,9 +1199,10 @@ static void parse_record(TokenArray *tokens, int *pos) {
     Program *p = tokens->program;
     ++*pos;
     Token *name = &tokens->tokens[*pos];
-    if (name->type != TK_IDENT || !strcmp(name->text, "void") || !strcmp(name->text, "pair") || !strcmp(name->text, "struct") || named_type(p, name->text) != VALUE_VOID)
+    if (name->type != TK_IDENT || !strcmp(name->text, "void") || !strcmp(name->text, "pair") || !strcmp(name->text, "mint") || assoc_kind(name->text) >= 0 ||
+        !strcmp(name->text, "mint998") || !strcmp(name->text, "mint107") || !strcmp(name->text, "struct") || named_type(p, name->text) != VALUE_VOID)
         parse_error(tokens, *pos, "expected a new structure name");
-    if (p->record_count >= 32760) parse_error(tokens, *pos, "too many structure types");
+    if (p->record_count >= 16384 - 7) parse_error(tokens, *pos, "too many structure types");
     ++*pos;
     if (tokens->tokens[*pos].type != TK_LBRACE) parse_error(tokens, *pos, "expected '{'");
     ++*pos;
@@ -1132,7 +1213,7 @@ static void parse_record(TokenArray *tokens, int *pos) {
     *record = (Record){.name = name->text};
     ValueType owner = VALUE_RECORD + (int)id * TYPE_STRIDE;
     while (tokens->tokens[*pos].type != TK_RBRACE) {
-        if (tokens->tokens[*pos].type == TK_FN) {
+        if (function_start(tokens, *pos)) {
             add_function(tokens, pos, owner);
             continue;
         }
@@ -1167,7 +1248,7 @@ Program* parse(TokenArray* tokens){
     while((size_t)pos < tokens->count){
         if(tokens->tokens[pos].type == TK_IDENT && !strcmp(tokens->tokens[pos].text, "struct")) {
             parse_record(tokens, &pos);
-        } else if(tokens->tokens[pos].type == TK_FN){
+        } else if(function_start(tokens, pos)){
             add_function(tokens, &pos, 0);
         }
         else if(tokens->tokens[pos].type == TK_RETURN){
