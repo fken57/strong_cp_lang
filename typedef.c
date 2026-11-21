@@ -110,10 +110,11 @@ typedef enum {
 
 
 typedef enum {
-    TK_INSERT, TK_EXTRACT, TK_CHAR,
+    TK_INSERT, TK_EXTRACT, TK_CHAR, TK_STRING,
     TK_NUMBER,
     TK_IDENT,
     TK_LET,
+    TK_AUTO,
     TK_INT,
     TK_BREAK,
     TK_DOT,
@@ -160,6 +161,7 @@ typedef enum {
 
 typedef enum {
     EXPR_NUMBER,
+    EXPR_TEXT,
     EXPR_VARIABLE,
     EXPR_BINARY,
     EXPR_UNARY,
@@ -175,7 +177,7 @@ typedef enum {
 typedef int ValueType;
 enum { VALUE_VOID = -1, VALUE_INT = 0, VALUE_ARRAY = 1, TYPE_STRIDE = 65536,
        VALUE_EDGE = TYPE_STRIDE, VALUE_GRAPH = 2 * TYPE_STRIDE,
-       VALUE_DIGRAPH = 3 * TYPE_STRIDE, VALUE_RECORD = 4 * TYPE_STRIDE };
+       VALUE_DIGRAPH = 3 * TYPE_STRIDE, VALUE_PAIR = 4 * TYPE_STRIDE, VALUE_DIAMETER = 5 * TYPE_STRIDE, VALUE_CHAR = 6 * TYPE_STRIDE, VALUE_STRING = VALUE_CHAR + 1, VALUE_RECORD = 7 * TYPE_STRIDE };
 static inline int type_rank(ValueType t) { return t < 0 ? 0 : t % TYPE_STRIDE; }
 static inline int type_base(ValueType t) { return t - type_rank(t); }
 static inline bool graph_type(ValueType t) { return t == VALUE_GRAPH || t == VALUE_DIGRAPH; }
@@ -187,6 +189,7 @@ struct Expr{
     ValueType value_type;
 
     union {
+        char *text;
         struct
         {
             long long number;
@@ -251,6 +254,7 @@ struct Statement
             Expr *value;
             int offset;
             bool explicit_type;
+            size_t binding_count;
             ValueType declared_type;
         } let;
 
@@ -271,7 +275,7 @@ struct Statement
             Statement *body;
         } while_stmt;
 
-        struct { Expr *value; char separator; } write;
+        struct { Expr *value; } write;
         struct { ValueType type; char *name; int offset; Expr *values; Statement *body; } each;
         struct {
             Statement *init;
@@ -298,6 +302,7 @@ struct Statement
             int offset;
             Expr *target;
             TokenType op;
+            bool stream_input;
         } assign;
         
     } data;

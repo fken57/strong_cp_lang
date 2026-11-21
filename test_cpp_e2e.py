@@ -51,6 +51,65 @@ class CppE2E(unittest.TestCase):
         )
         self.assertEqual(built.returncode, 0, built.stderr)
 
+    def test_char_string_and_string_vectors(self):
+        self.assert_output(r"""
+string s = "かな";
+s.push_back('!');
+char[] t = ['a', 'b'];
+t[1] = 'x';
+t += "word";
+char[][] words = [s, t];
+words[1].push_back('?');
+words.push("new");
+cout << words[0] << ' ' << words[1] << '\n';
+print(words);
+print(s.size());
+print(t[0] == 'a');
+char c;
+string word;
+cin >> c >> word;
+cout << c << ' ' << word << '\n';
+for (char ch : "ab") { cout << ch; }
+""", "かな! axword?\nかな! axword? new\n7\n1\na bc\nab", "abc\n")
+
+    def test_structured_binding_and_tree_diameter(self):
+        self.assert_output("""
+struct Sample { int count; int[] data; }
+fn make(calls: &int) -> Sample {
+    calls++;
+    return Sample{count: 9, data: [4, 5]};
+}
+int calls;
+auto [count, data] = make(calls);
+print(calls); print(count); print(data);
+auto [value, times] = [6,6,6].run_length()[0];
+print(value); print(times);
+graph G(3);
+G.add(0, 1, 9223372036854775808);
+G.add(1, 2, 8);
+auto cnt = G.diameter;
+auto [d, a, b] = G.diameter;
+print(cnt.dist); print(d); print(a); print(b);
+graph singleton(1);
+auto [zero, first, last] = singleton.diameter;
+print(zero); print(first); print(last);
+""", "1\n9\n4 5\n6\n3\n9223372036854775816\n9223372036854775816\n2\n0\n0\n0\n0\n")
+
+    def test_array_boundaries_and_run_length(self):
+        self.assert_output("""
+int[] a = [3, 1, 3, 9223372036854775808, 3];
+pair<int,int>[] runs = a.run_length();
+for (pair<int,int> run : runs) { cout << run.first << ' ' << run.second << '\\n'; }
+a.sort();
+cout << a.at_least(3) << ' ' << a.more_than(3) << ' '
+     << a.at_most(3) << ' ' << a.less_than(3) << '\\n';
+cout << a.at_least(9223372036854775809) << ' ' << a.more_than(9223372036854775808)
+     << ' ' << a.at_most(0) << ' ' << a.less_than(1) << '\\n';
+int[] empty;
+cout << empty.at_least(0) << ' ' << empty.more_than(0) << ' '
+     << empty.at_most(0) << ' ' << empty.less_than(0) << ' ' << empty.run_length().size() << '\\n';
+""", "3 1\n1 1\n3 1\n9223372036854775808 1\n3 1\n1 4 3 0\n5 5 -1 -1\n0 0 -1 -1 0\n")
+
     def test_record_graph_streams(self):
         self.assert_output((ROOT / "example_graph.fken").read_text(), "2 11\n3 9223372036854775809\n",
                            "3 2   1 2 10   1 3 9223372036854775808")

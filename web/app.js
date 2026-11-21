@@ -9,12 +9,12 @@ function escapeHtml(text) {
   return text.replace(/[&<>"']/g, (char) => ({"&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;"}[char]));
 }
 function syntax(text) {
-  const pattern = /(\/\/[^\n]*|\b(?:struct|graph|digraph|edge|cin|cout|fn|let|if|else|while|for|rep|return|break|int|void)\b|\b(?:print|read_int|read_vec|array|len|push|pop|back|size|resize|clear|add|edge_count)\b|\b[0-9]+\b)/g;
+  const pattern = /("(?:\\.|[^"\\\n])*"|'(?:\\.|[^'\\\n])*'|\/\/[^\n]*|\b(?:struct|graph|digraph|edge|pair|cin|cout|fn|let|auto|if|else|while|for|rep|return|break|int|char|string|void)\b|\b(?:print|read_char|read_string|read_int|read_vec|array|len|push_back|push|pop|back|size|resize|clear|add|edge_count|sort|at_least|more_than|at_most|less_than|run_length)\b|\b[0-9]+\b)/g;
   let result = "", end = 0;
   for (const match of text.matchAll(pattern)) {
     const token = match[0];
-    const kind = token.startsWith("//") ? "comment" : /^[0-9]/.test(token) ? "number" :
-      /^(print|read_int|read_vec|array|len|push|pop|back|size|resize|clear|add|edge_count)$/.test(token) ? "builtin" : "keyword";
+    const kind = token.startsWith("//") ? "comment" : /^["']/.test(token) ? "string" : /^[0-9]/.test(token) ? "number" :
+      /^(print|read_char|read_string|read_int|read_vec|array|len|push_back|push|pop|back|size|resize|clear|add|edge_count|sort|at_least|more_than|at_most|less_than|run_length)$/.test(token) ? "builtin" : "keyword";
     result += escapeHtml(text.slice(end, match.index)) + '<span class="token-' + kind + '">' + escapeHtml(token) + "</span>";
     end = match.index + token.length;
   }
@@ -169,6 +169,7 @@ function placeCompletion() {
 }
 async function complete(manual) {
   if (state.composing) return;
+  if (manual) clearTimeout(completionTimer);
   const offset = source.selectionStart, version = state.version;
   const prefix = source.value.slice(0, offset).match(/[A-Za-z_][A-Za-z0-9_]*$/);
   if (!manual && !prefix && !/\.\s*$/.test(source.value.slice(0, offset))) { hideCompletion(); return; }

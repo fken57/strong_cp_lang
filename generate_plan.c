@@ -13,6 +13,8 @@ static void plan_args(Expr **args, size_t count) {
 static void plan_expr(const Expr *e) {
     if (!e) { fputs("null", stdout); return; }
     switch (e->type) {
+    case EXPR_TEXT:
+        fputs("[\"text\",", stdout); json_string(stdout, e->data.text); break;
     case EXPR_NUMBER:
         printf("[\"int\",\"%s\"", e->data.number.literal); break;
     case EXPR_VARIABLE:
@@ -23,7 +25,7 @@ static void plan_expr(const Expr *e) {
     case EXPR_UNARY:
         fputs("[\"neg\",", stdout); plan_expr(e->data.unary.operand); break;
     case EXPR_ARRAY:
-        fputs("[\"arrayLiteral\",", stdout); plan_args(e->data.array.items, e->data.array.count); break;
+        printf("[\"arrayLiteral\",%d,", e->value_type); plan_args(e->data.array.items, e->data.array.count); break;
     case EXPR_CONSTRUCT:
         printf("[\"construct\",%d,", e->value_type); plan_args(e->data.construct.sizes, e->data.construct.count); break;
     case EXPR_RECORD:
@@ -69,7 +71,7 @@ static void plan_statement(const Statement *s) {
         printf("[\"assign\",\"%s\",", token_type_name(s->data.assign.op));
         plan_expr(s->data.assign.target); putchar(','); plan_expr(s->data.assign.value); break;
     case STMT_WRITE:
-        printf("[\"write\",%d,", s->data.write.separator); plan_expr(s->data.write.value); break;
+        fputs("[\"write\",", stdout); plan_expr(s->data.write.value); break;
     case STMT_PRINT:
         fputs("[\"print\",", stdout); plan_expr(s->data.print.expression); break;
     case STMT_EXPR:

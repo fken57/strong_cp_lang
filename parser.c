@@ -71,6 +71,22 @@ Expr* parse_primary(TokenArray* tokens, int begin, int end) {
         expr->type = EXPR_NUMBER;
         expr->data.number.literal = token->text;
         expr->data.number.number = strtoll(token->text, NULL, 10);
+    } else if (token->type == TK_CHAR || token->type == TK_STRING) {
+        expr->type = EXPR_TEXT;
+        expr->data.text = malloc(token->length);
+        if (!expr->data.text) error_at(NULL, "out of memory");
+        char *out = expr->data.text;
+        for (size_t i = 1; i + 1 < token->length; ++i) {
+            char c = token->text[i];
+            if (c == '\\') {
+                c = token->text[++i];
+                if (c == 'n') c = '\n';
+                else if (c == 't') c = '\t';
+                else if (c == 'r') c = '\r';
+            }
+            *out++ = c;
+        }
+        *out = '\0';
     } else if (token->type == TK_IDENT) {
         expr->type = EXPR_VARIABLE;
         expr->data.variable.var_name = token->text;
@@ -453,19 +469,15 @@ static Statement *parse_stream(TokenArray *tokens, int begin, int end, bool inpu
             item->data.assign.target = target;
             item->data.assign.name = copy_text(root->data.variable.var_name, strlen(root->data.variable.var_name));
             item->data.assign.op = TK_ASSIGN;
+            item->data.assign.stream_input = true;
             Expr *read = calloc(1, sizeof(*read));
             if (!read) error_at(NULL, "out of memory");
             read->type = EXPR_CALL; read->token = item->token; read->data.call.name = "read_int";
             item->data.assign.value = read;
         } else {
             item->type = STMT_WRITE;
-            if (start + 1 == pos && item->token->type == TK_CHAR) {
-                const char *t = item->token->text;
-                item->data.write.separator = t[1] == ' ' ? ' ' : t[2] == 'n' ? '\n' : '\t';
-            } else {
-                item->data.write.value = parse_equality(tokens, start, pos);
-                if (!item->data.write.value) parse_error(tokens, start, "expected output value");
-            }
+            item->data.write.value = parse_equality(tokens, start, pos);
+            if (!item->data.write.value) parse_error(tokens, start, "expected output value");
         }
         block->data.block.statements[block->data.block.count++] = item;
     }
@@ -519,6 +531,8 @@ Statement* parse_assign_statement(TokenArray* tokens, int *pos){
 
 static ValueType named_type(Program *program, const char *name) {
     if (!strcmp(name, "int")) return VALUE_INT;
+    if (!strcmp(name, "char")) return VALUE_CHAR;
+    if (!strcmp(name, "string")) return VALUE_STRING;
     if (!strcmp(name, "graph")) return VALUE_GRAPH;
     if (!strcmp(name, "digraph")) return VALUE_DIGRAPH;
     if (!strcmp(name, "edge")) return VALUE_EDGE;
@@ -530,24 +544,26 @@ static ValueType named_type(Program *program, const char *name) {
 
 static bool declaration_start(TokenArray *tokens, int i) {
     Token *t = &tokens->tokens[i];
-    return t->type == TK_LET || t->type == TK_INT ||
-           (t->type == TK_IDENT && named_type(tokens->program, t->text) != VALUE_VOID);
+    return t->type == TK_LET || t->type == TK_AUTO || t->type == TK_INT ||
+           (t->type == TK_IDENT && (named_type(tokens->program, t->text) != VALUE_VOID ||
+            (!strcmp(t->text, "pair") && tokens->tokens[i+1].type == TK_LT)));
 }
 
 static ValueType parse_type(TokenArray *tokens, int *pos, int end, bool allow_void);
 
-static Statement *parse_declarator(TokenArray *tokens, int *pos, Token *keyword, ValueType type) {
+static Statement *parse_declarator(TokenArray *tokens, int *pos, Token *keyword, ValueType type, const char *name) {
     Statement *stmt = calloc(1, sizeof(*stmt));
     if (!stmt) error_at(NULL, "out of memory");
     stmt->type = STMT_LET;
     stmt->token = keyword;
-    stmt->data.let.explicit_type = keyword->type != TK_LET;
+    stmt->data.let.explicit_type = keyword->type != TK_LET && keyword->type != TK_AUTO;
     stmt->data.let.declared_type = type;
-    if ((size_t)*pos >= tokens->count || tokens->tokens[*pos].type != TK_IDENT) {
-        parse_error(tokens, *pos, "expected identifier in declaration");
+    if (!name) {
+        if (tokens->tokens[*pos].type != TK_IDENT)
+            parse_error(tokens, *pos, "expected identifier in declaration");
+        name = tokens->tokens[(*pos)++].text;
     }
-    stmt->data.let.name = copy_text(tokens->tokens[*pos].text, strlen(tokens->tokens[*pos].text));
-    (*pos)++;
+    stmt->data.let.name = copy_text(name, strlen(name));
     int begin = *pos;
     while ((size_t)*pos < tokens->count && tokens->tokens[*pos].type != TK_SEMICOLON) {
         TokenType kind = tokens->tokens[*pos].type;
@@ -594,12 +610,62 @@ static Statement *parse_declarator(TokenArray *tokens, int *pos, Token *keyword,
     return stmt;
 }
 
+static Statement *parse_bindings(TokenArray *tokens, int *pos, Token *keyword) {
+    int opening = *pos;
+    int close = matching_close(tokens, opening, (int)tokens->count);
+    Statement *group = calloc(1, sizeof(*group));
+    if (!group) error_at(NULL, "out of memory");
+    group->type = STMT_DECLARATIONS;
+    group->token = keyword;
+    Statement **items = calloc((size_t)(close - opening + 1), sizeof(*items));
+    if (!items) error_at(NULL, "out of memory");
+    group->data.block.statements = items;
+    size_t count = 1; // The hidden first declaration evaluates the initializer once.
+    char hidden[64];
+    snprintf(hidden, sizeof(hidden), "$binding%zu", keyword->offset);
+    ++*pos;
+    for (;;) {
+        Token *name = &tokens->tokens[*pos];
+        if (name->type != TK_IDENT) parse_error(tokens, *pos, "expected binding name");
+        Statement *binding = calloc(1, sizeof(*binding));
+        Expr *field = calloc(1, sizeof(*field)), *owner = calloc(1, sizeof(*owner));
+        if (!binding || !field || !owner) error_at(NULL, "out of memory");
+        binding->type = STMT_LET;
+        binding->token = name;
+        binding->data.let.name = copy_text(name->text, strlen(name->text));
+        binding->data.let.value = field;
+        field->type = EXPR_FIELD;
+        field->token = name;
+        field->data.field.owner = owner;
+        field->data.field.index = count - 1;
+        owner->type = EXPR_VARIABLE;
+        owner->token = keyword;
+        items[count++] = binding;
+        if (++*pos == close) break;
+        if (tokens->tokens[(*pos)++].type != TK_COMMA) parse_error(tokens, *pos - 1, "expected ',' between bindings");
+    }
+    ++*pos;
+    items[0] = parse_declarator(tokens, pos, keyword, VALUE_INT, hidden);
+    if (tokens->tokens[*pos].type != TK_SEMICOLON) parse_error(tokens, *pos, "expected ';' after bindings");
+    ++*pos;
+    items[0]->data.let.binding_count = count - 1;
+    for (size_t i = 1; i < count; ++i) {
+        items[i]->data.let.value->data.field.owner->data.variable.var_name = items[0]->data.let.name;
+    }
+    group->data.block.count = count;
+    return group;
+}
+
 Statement* parse_let_statement(TokenArray* tokens, int *pos) {
     Token *keyword = &tokens->tokens[*pos];
     ValueType type = VALUE_INT;
-    if (keyword->type == TK_LET) ++*pos;
+    if (keyword->type == TK_AUTO && tokens->tokens[*pos+1].type == TK_LBRACKET) {
+        ++*pos;
+        return parse_bindings(tokens, pos, keyword);
+    }
+    if (keyword->type == TK_LET || keyword->type == TK_AUTO) ++*pos;
     else type = parse_type(tokens, pos, (int)tokens->count, false);
-    Statement *first = parse_declarator(tokens, pos, keyword, type);
+    Statement *first = parse_declarator(tokens, pos, keyword, type, NULL);
     if (tokens->tokens[*pos].type == TK_SEMICOLON) { ++*pos; return first; }
     Statement *group = calloc(1, sizeof(*group));
     if (!group) error_at(NULL, "out of memory");
@@ -612,7 +678,7 @@ Statement* parse_let_statement(TokenArray* tokens, int *pos) {
         if (!group->data.block.statements) error_at(NULL, "out of memory");
         group->data.block.statements[n] = item;
         if (tokens->tokens[(*pos)++].type == TK_SEMICOLON) break;
-        item = parse_declarator(tokens, pos, keyword, type);
+        item = parse_declarator(tokens, pos, keyword, type, NULL);
     }
     return group;
 }
@@ -762,7 +828,7 @@ Statement* parse_for_statement(TokenArray *tokens, int *pos) {
     }
     int close = matching_close(tokens, *pos, (int)tokens->count);
     (*pos)++;
-    if (declaration_start(tokens, *pos) && tokens->tokens[*pos].type != TK_LET) {
+    if (declaration_start(tokens, *pos) && tokens->tokens[*pos].type != TK_LET && tokens->tokens[*pos].type != TK_AUTO) {
         int look = *pos;
         ValueType type = parse_type(tokens, &look, close, false);
         if (look + 1 < close && tokens->tokens[look].type == TK_IDENT && tokens->tokens[look+1].type == TK_COLON) {
@@ -967,6 +1033,15 @@ static ValueType parse_type(TokenArray *tokens, int *pos, int end, bool allow_vo
     Token *token = &tokens->tokens[(*pos)++];
     if (strcmp(token->text, "void") == 0 && allow_void) return VALUE_VOID;
     ValueType type = named_type(tokens->program, token->text);
+    if (!strcmp(token->text, "pair")) {
+        const TokenType syntax[] = {TK_LT, TK_INT, TK_COMMA, TK_INT, TK_GT};
+        for (size_t i = 0; i < sizeof(syntax)/sizeof(*syntax); ++i) {
+            if (*pos >= end || tokens->tokens[*pos].type != syntax[i])
+                parse_error(tokens, *pos, "expected pair<int,int>");
+            ++*pos;
+        }
+        type = VALUE_PAIR;
+    }
     if (type == VALUE_VOID) error_at(token, "unknown or invalid type '%s'", token->text);
     while (*pos < end && tokens->tokens[*pos].type == TK_LBRACKET) {
         (*pos)++;
@@ -1044,7 +1119,7 @@ static void parse_record(TokenArray *tokens, int *pos) {
     Program *p = tokens->program;
     ++*pos;
     Token *name = &tokens->tokens[*pos];
-    if (name->type != TK_IDENT || !strcmp(name->text, "void") || !strcmp(name->text, "struct") || named_type(p, name->text) != VALUE_VOID)
+    if (name->type != TK_IDENT || !strcmp(name->text, "void") || !strcmp(name->text, "pair") || !strcmp(name->text, "struct") || named_type(p, name->text) != VALUE_VOID)
         parse_error(tokens, *pos, "expected a new structure name");
     if (p->record_count >= 32760) parse_error(tokens, *pos, "too many structure types");
     ++*pos;

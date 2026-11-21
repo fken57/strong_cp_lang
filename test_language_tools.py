@@ -45,7 +45,7 @@ class LanguageTests(unittest.TestCase):
 
     def test_completion_prefix_snippets_and_incomplete_code(self):
         items = self.completion("rea|")
-        self.assertEqual(set(items), {"read_int", "read_vec"})
+        self.assertEqual(set(items), {"read_int", "read_vec", "read_char", "read_string"})
         self.assertIn("$", items["read_vec"]["textEdit"]["newText"])
         result = self.service.completions("rea", {"line": 0, "character": 3}, snippets=False)
         self.assertTrue(all("$" not in item["textEdit"]["newText"] for item in result["items"]))
@@ -100,6 +100,11 @@ class LanguageTests(unittest.TestCase):
     def test_typed_vector_methods_and_break_completion(self):
         items = self.completion("int[][] grid(2,3);\ngrid.|")
         self.assertEqual(set(items), {"push", "pop", "back", "size", "resize", "clear"})
+        scalar_items = self.completion("int[] a; a.|")
+        self.assertEqual(set(scalar_items) - set(items), {"sort", "at_least", "more_than", "at_most", "less_than", "run_length"})
+        self.assertEqual(set(self.completion("int[] a; pair<int,int>[] runs = a.run_length(); runs[0].|")),
+                         {"first", "second"})
+        self.assertTrue(self.service.diagnostics("int[][] a; a.run_length();"))
         self.assertEqual(items["push"]["kind"], 2)
         self.assertIn("value: int[]", items["push"]["detail"])
         self.assertIn("value: int)", self.completion("int[][] grid; grid[0].pu|")["push"]["detail"])
@@ -119,7 +124,7 @@ class LanguageTests(unittest.TestCase):
         self.assertIn("break is only allowed", self.service.diagnostics("break;")[0]["message"])
 
     def test_record_and_graph_members(self):
-        self.assertEqual(set(self.completion("graph G(2); G.|")), {"size", "add", "edge_count"})
+        self.assertEqual(set(self.completion("graph G(2); G.|")), {"size", "add", "edge_count", "diameter"})
         self.assertEqual(set(self.completion("graph G(2); G[0][0].|")), {"to", "cost", "id"})
         self.assertIn("cost", self.completion("graph G(2); for(edge e : G[0]) { e.| }"))
         point = "struct P { int x; fn twice() -> int {return self.x*2;} } "
@@ -129,6 +134,24 @@ class LanguageTests(unittest.TestCase):
                        point + "P q = P{x: 1, x: 2};", point + "P q; q.missing = 1;"):
             with self.subTest(source=source):
                 self.assertTrue(self.service.diagnostics(source))
+
+    def test_auto_and_diameter_completion(self):
+        self.assertEqual(set(self.completion("graph G(1); auto cnt = G.diameter; cnt.|")), {"dist", "one", "two"})
+        items = self.completion("graph G(1); auto [dist, a, b] = G.diameter; dis|")
+        self.assertEqual(items["dist"]["detail"], "int dist")
+        items = self.completion("graph G(1); auto cnt = G.diameter;|")
+        expansion = next(item for item in items.values() if item["label"].startswith("分解して展開"))
+        self.assertEqual(expansion["textEdit"]["newText"],
+                         "auto [diameter_dist, diameter_one, diameter_two] = G.diameter;")
+        for source in ("auto [a,b] = 1;", "graph G(1); auto [a,b] = G.diameter;",
+                       "graph G(1); auto [a,a,b] = G.diameter;", "digraph G(1); auto x = G.diameter;"):
+            self.assertTrue(self.service.diagnostics(source), source)
+
+    def test_string_completion_and_diagnostics(self):
+        self.assertIn("push_back", self.completion('string s = "https://ex"; s.pu|'))
+        self.assertIn("push_back", self.completion('auto words = ["a", "b"]; words[0].pu|'))
+        for source in ("string s; s.push_back(1);", "char c = 'ab';", 'string s = "unterminated'):
+            self.assertTrue(self.service.diagnostics(source), source)
 
     def test_check_cli(self):
         result = subprocess.run([str(ROOT / "fken_cpl"), "--check", "--code", "print(1);"],
@@ -276,7 +299,7 @@ class WebTests(unittest.TestCase):
         status, _, body = self.request("POST", "/api/complete", {
             "source": "rea", "position": {"line": 0, "character": 3}})
         self.assertEqual(status, 200)
-        self.assertEqual({i["label"] for i in json.loads(body)["items"]}, {"read_int", "read_vec"})
+        self.assertEqual({i["label"] for i in json.loads(body)["items"]}, {"read_int", "read_vec", "read_char", "read_string"})
         status, _, body = self.request("POST", "/api/compile", {"source": "print(42);"})
         self.assertEqual(status, 200)
         self.assertIn("int main()", json.loads(body)["cpp"])

@@ -1,6 +1,7 @@
 #ifndef FKEN_RUNTIME_HPP
 #define FKEN_RUNTIME_HPP
 
+#include <algorithm>
 #include <boost/multiprecision/cpp_int.hpp>
 #include <charconv>
 #include <cstddef>
@@ -154,18 +155,91 @@ public:
 template <int Rank, class Element = Int> struct VectorType {
     using type = std::vector<typename VectorType<Rank - 1, Element>::type>;
 };
+template <> struct VectorType<1, char> { using type = std::string; };
 template <class Element> struct VectorType<0, Element> { using type = Element; };
 template <int Rank, class Element = Int> using Vec = typename VectorType<Rank, Element>::type;
 using Array = Vec<1>;
+using IntPair = std::pair<Int, Int>;
+
+inline bool integer_less(const Int &left, const Int &right) {
+    return static_cast<bool>(left < right);
+}
+
+inline void sort(Array &values) {
+    std::sort(values.begin(), values.end(), integer_less);
+}
+
+inline Int at_least(const Array &values, const Int &x) {
+    return Int(std::lower_bound(values.begin(), values.end(), x, integer_less) - values.begin());
+}
+
+inline Int more_than(const Array &values, const Int &x) {
+    return Int(std::upper_bound(values.begin(), values.end(), x, integer_less) - values.begin());
+}
+
+inline Int at_most(const Array &values, const Int &x) {
+    return more_than(values, x) - Int(1);
+}
+
+inline Int less_than(const Array &values, const Int &x) {
+    return at_least(values, x) - Int(1);
+}
+
+inline std::vector<IntPair> run_length(const Array &values) {
+    std::vector<IntPair> runs;
+    for (const auto &value : values) {
+        if (runs.empty() || runs.back().first != value) runs.emplace_back(value, Int(1));
+        else runs.back().second += Int(1);
+    }
+    return runs;
+}
 
 template <int Rank, class Element = Int>
 Vec<Rank, Element> make_vec(const std::vector<std::size_t> &shape, std::size_t dimension = 0) {
-    Vec<Rank, Element> values(shape[dimension]);
-    if constexpr (Rank > 1) {
-        for (auto &child : values) child = make_vec<Rank - 1, Element>(shape, dimension + 1);
+    if constexpr (Rank == 1 && std::is_same_v<Element, char>) {
+        return std::string(shape[dimension], '\0');
+    } else {
+        Vec<Rank, Element> values(shape[dimension]);
+        if constexpr (Rank > 1) {
+            for (auto &child : values) child = make_vec<Rank - 1, Element>(shape, dimension + 1);
+        }
+        return values;
     }
-    return values;
 }
+
+inline std::string read_string() {
+    std::string value;
+    if (!(std::cin >> value)) throw std::runtime_error("expected string input");
+    return value;
+}
+
+inline char read_char() {
+    char value;
+    if (!(std::cin >> value)) throw std::runtime_error("expected character input");
+    return value;
+}
+
+inline Int len(const std::string &value) { return Int(static_cast<std::int64_t>(value.size())); }
+inline Int size(const std::string &value) { return len(value); }
+inline void push_back(std::string &value, char c) { value.push_back(c); }
+inline void push(std::string &value, char c) { value.push_back(c); }
+inline void clear(std::string &value) { value.clear(); }
+inline void resize(std::string &value, const Int &n, char fill = '\0') {
+    value.resize(n.to_size("string size"), fill);
+}
+
+inline char back(const std::string &value) {
+    if (value.empty()) throw std::out_of_range("back of empty string");
+    return value.back();
+}
+inline char pop(std::string &value) {
+    char c = back(value);
+    value.pop_back();
+    return c;
+}
+
+inline char &at(std::string &value, const Int &i) { return value.at(i.to_size("string index")); }
+inline const char &at(const std::string &value, const Int &i) { return value.at(i.to_size("string index")); }
 
 inline Int read_int() {
     std::string token;
@@ -209,6 +283,10 @@ struct Edge {
     Int to, cost, id;
 };
 
+struct Diameter {
+    Int dist, one, two;
+};
+
 template <bool Directed>
 class Graph {
     std::vector<std::vector<Edge>> rows_;
@@ -218,6 +296,34 @@ public:
     Int size() const { return len(rows_); }
     const Int &edge_count() const { return edge_count_; }
     const std::vector<Edge> &neighbors(const Int &u) const { return at(rows_, u); }
+
+    Diameter diameter() const {
+        const auto n = rows_.size();
+        if (n == 0 || edge_count_ != Int(static_cast<std::int64_t>(n - 1)))
+            throw std::invalid_argument("diameter requires a nonempty undirected tree");
+        auto farthest = [&](std::size_t start) {
+            std::vector<Int> dist(n, Int(-1));
+            std::vector<std::size_t> order{start};
+            dist[start] = Int(0);
+            auto best = start;
+            for (std::size_t i = 0; i < order.size(); ++i) {
+                auto u = order[i];
+                for (const auto &edge : rows_[u]) {
+                    if (edge.cost < Int(0)) throw std::invalid_argument("diameter requires nonnegative edge weights");
+                    auto v = edge.to.to_size("vertex index");
+                    if (dist[v] >= Int(0)) continue;
+                    dist[v] = dist[u] + edge.cost;
+                    order.push_back(v);
+                    if (best == start || dist[v] > dist[best]) best = v;
+                }
+            }
+            if (order.size() != n) throw std::invalid_argument("diameter requires a connected tree");
+            return std::pair(best, std::move(dist[best]));
+        };
+        auto [one, ignored] = farthest(0);
+        auto [two, dist] = farthest(one);
+        return {std::move(dist), Int(static_cast<std::int64_t>(one)), Int(static_cast<std::int64_t>(two))};
+    }
 
     Int add(const Int &u, const Int &v, const Int &cost = Int(1)) {
         auto &from = at(rows_, u);
@@ -279,7 +385,7 @@ template <class T>
 std::ostream &operator<<(std::ostream &out, const std::vector<T> &values) {
     for (std::size_t i = 0; i < values.size(); i++) {
         if (i) out << ' ';
-        if constexpr (std::is_same_v<T, Int>) out << values[i];
+        if constexpr (std::is_same_v<T, Int> || std::is_same_v<T, std::string>) out << values[i];
         else out << '[' << values[i] << ']';
     }
     return out;

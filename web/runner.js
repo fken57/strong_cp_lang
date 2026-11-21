@@ -1,10 +1,16 @@
 "use strict";
 
+function encodeBytes(value) {
+  let result = "";
+  for (const byte of new TextEncoder().encode(value)) result += String.fromCharCode(byte);
+  return result;
+}
+
 // Only the compiler's analyzed instruction tree is interpreted in this worker.
 function execute(plan, stdin, print) {
   const functions = new Map(plan.functions.map(([name, params, body]) => [name, {params, body}]));
-  const tokens = stdin.match(/\S+/g) || [];
-  let cursor = 0, remainingElements = 2000000;
+  const tokens = encodeBytes(stdin).match(/[^\x09-\x0d\x20]+/g) || [];
+  let cursor = 0, tokenOffset = 0, remainingElements = 2000000;
 
   function allocate(n) {
     if (n < 0 || n > remainingElements) throw Error("配列サイズが Web 実行の上限を超えています。");
@@ -12,12 +18,17 @@ function execute(plan, stdin, print) {
   }
   const stride = 65536, edgeType = stride, graphType = 2*stride, digraphType = 3*stride;
   function isGraph(type) { return type === graphType || type === digraphType; }
+  const charType = 6 * stride, stringType = charType + 1;
   function initial(type) {
+    if (type === charType) return "\0";
+    if (type === stringType) return "";
     if (type % stride) return [];
     if (!type) return 0n;
     if (type === edgeType) return [0n, 0n, 0n];
     if (isGraph(type)) return {rows: [], edges: 0n};
-    const fields = plan.records[type / stride - 4];
+    if (type === 4 * stride) return [0n, 0n];
+    if (type === 5 * stride) return [0n, 0n, 0n];
+    const fields = plan.records[type / stride - 7];
     allocate(fields.length);
     return fields.map(initial);
   }
@@ -27,8 +38,13 @@ function execute(plan, stdin, print) {
     allocate(x.length);
     return x.map(copy);
   }
+  function nextToken() {
+    const value = tokens[cursor++]?.slice(tokenOffset);
+    tokenOffset = 0;
+    return value;
+  }
   function read() {
-    const token = tokens[cursor++];
+    const token = nextToken();
     if (!token || !/^[+-]?\d+$/.test(token)) throw Error("標準入力に整数が必要です。");
     return BigInt(token);
   }
@@ -36,6 +52,7 @@ function execute(plan, stdin, print) {
     if (depth === shape.length) return initial(element);
     const n = Number(shape[depth]);
     allocate(n);
+    if (depth === shape.length - 1 && element === charType) return "\0".repeat(n);
     return Array.from({length: n}, () => construct(shape, depth + 1, element));
   }
   function index(a, i) {
@@ -70,7 +87,11 @@ function execute(plan, stdin, print) {
     position();
     return {
       get() { const [a, k] = position(); return a[k]; },
-      set(v) { const [a, k] = position(); a[k] = v; }
+      set(v) {
+        const [a, k] = position();
+        if (typeof a === "string") parent.set(a.slice(0, k) + v + a.slice(k + 1));
+        else a[k] = v;
+      }
     };
   }
   function reference(node, env) {
@@ -79,6 +100,33 @@ function execute(plan, stdin, print) {
   }
   function cell(value) {
     return {get: () => value, set: next => { value = next; }};
+  }
+  function diameter(graph) {
+    const n = graph.rows.length;
+    if (!n || graph.edges !== BigInt(n - 1)) throw Error("直径を求めるには空でない無向木が必要です。");
+    function farthest(start) {
+      allocate(2 * n);
+      const distances = Array(n).fill(-1n);
+      const order = [start];
+      distances[start] = 0n;
+      let best = start;
+      for (const u of order) {
+        for (const [to, cost] of graph.rows[u]) {
+          if (cost < 0n) throw Error("直径を求めるには辺の重みが非負である必要があります。");
+          const v = Number(to);
+          if (distances[v] >= 0n) continue;
+          distances[v] = distances[u] + cost;
+          order.push(v);
+          if (best === start || distances[v] > distances[best]) best = v;
+        }
+      }
+      if (order.length !== n) throw Error("直径を求めるには連結な木が必要です。");
+      return [best, distances[best]];
+    }
+    const [one] = farthest(0);
+    const [two, dist] = farthest(one);
+    allocate(3);
+    return [dist, BigInt(one), BigInt(two)];
   }
   function call([, name, receiver, args, rank], env) {
     const fn = functions.get(name);
@@ -97,6 +145,7 @@ function execute(plan, stdin, print) {
       const values = args.map(arg => expr(arg, env));
       const a = ref.get();
       if (isGraph(rank)) {
+        if (name === "diameter") return diameter(a);
         if (name === "size") return BigInt(a.rows.length);
         if (name === "edge_count") return a.edges;
         const [u, v, cost = 1n] = values;
@@ -107,7 +156,56 @@ function execute(plan, stdin, print) {
         if (rank === graphType) a.rows[to].push([u, cost, id]);
         return id;
       }
+      if (rank === stringType) {
+        switch (name) {
+          case "size": return BigInt(a.length);
+          case "clear": ref.set(""); return;
+          case "push":
+          case "push_back": allocate(1); ref.set(a + values[0]); return;
+          case "back":
+          case "pop":
+            if (!a.length) throw Error("文字列が空です。");
+            if (name === "pop") ref.set(a.slice(0, -1));
+            return a.at(-1);
+          case "resize": {
+            const n = Number(values[0]);
+            if (n < 0) throw Error("文字列の長さは 0 以上にしてください。");
+            const added = Math.max(0, n - a.length);
+            allocate(added);
+            ref.set(a.slice(0, n) + (values[1] ?? "\0").repeat(added));
+            return;
+          }
+        }
+      }
       switch (name) {
+        case "sort": a.sort((x, y) => x < y ? -1 : x > y ? 1 : 0); return;
+        case "at_least":
+        case "more_than":
+        case "at_most":
+        case "less_than": {
+          const strict = name === "more_than" || name === "at_most";
+          const last = name === "at_most" || name === "less_than";
+          const [x] = values;
+          let low = 0, high = a.length;
+          while (low < high) {
+            const mid = low + Math.floor((high - low) / 2);
+            if (a[mid] < x || (strict && a[mid] === x)) low = mid + 1;
+            else high = mid;
+          }
+          return BigInt(last ? low - 1 : low);
+        }
+        case "run_length": {
+          const runs = [];
+          for (const value of a) {
+            const last = runs.at(-1);
+            if (last && last[0] === value) last[1]++;
+            else {
+              allocate(3);
+              runs.push([value, 1n]);
+            }
+          }
+          return runs;
+        }
         case "size": return BigInt(a.length);
         case "clear": a.length = 0; return;
         case "push": allocate(1); a.push(values[0]); return;
@@ -128,6 +226,18 @@ function execute(plan, stdin, print) {
     if (name === "len") return BigInt(reference(args[0], env).get().length);
     const values = args.map(arg => expr(arg, env));
     if (name === "read_int") return read();
+    if (name === "read_string") {
+      const token = nextToken();
+      if (!token) throw Error("文字列の標準入力が必要です。");
+      return token;
+    }
+    if (name === "read_char") {
+      const token = tokens[cursor];
+      if (!token) throw Error("文字の標準入力が必要です。");
+      const ch = token[tokenOffset++];
+      if (tokenOffset === token.length) { cursor++; tokenOffset = 0; }
+      return ch;
+    }
     const n = Number(values[0]);
     allocate(n);
     if (name === "read_vec") return Array.from({length: n}, read);
@@ -136,10 +246,15 @@ function execute(plan, stdin, print) {
   }
   function expr(node, env) {
     switch (node[0]) {
+      case "text": return node[1];
       case "int": return BigInt(node[1]);
       case "var": case "index": case "field": return copy(location(node, env).get());
       case "neg": return -expr(node[1], env);
-      case "arrayLiteral": allocate(node[1].length); return node[1].map(e => expr(e, env));
+      case "arrayLiteral": {
+        allocate(node[2].length);
+        const values = node[2].map(e => expr(e, env));
+        return node[1] === stringType ? values.join("") : values;
+      }
       case "record": {
         const fields = initial(node[1]);
         for (const [i, value] of node[2]) fields[i] = expr(value, env);
@@ -182,7 +297,7 @@ function execute(plan, stdin, print) {
         ref.set(s[1] === "TK_ASSIGN" ? rhs : binary(op, ref.get(), rhs));
         break;
       }
-      case "write": if (s[2]) writeValue(expr(s[2], env)); else print(String.fromCharCode(s[1])); break;
+      case "write": writeValue(expr(s[1], env)); break;
       case "print": writeValue(expr(s[1], env)); print("\n"); break;
       case "expr": expr(s[1], env); break;
       case "if": return statement(expr(s[1], env) ? s[2] : s[3], env);
@@ -213,9 +328,10 @@ self.onmessage = ({data}) => {
   let output = "", error = "";
   try {
     execute(data.plan, data.stdin, line => {
-      if (output.length + line.length > 65536) throw Error("出力が 64 Ki 文字を超えました。");
+      if (output.length + line.length > 65536) throw Error("出力が 64 KiB を超えました。");
       output += line;
     });
   } catch (e) { error = e.message; }
-  self.postMessage({output, error});
+  const bytes = Uint8Array.from(output, c => c.charCodeAt(0));
+  self.postMessage({output: new TextDecoder("utf-8", {ignoreBOM: true}).decode(bytes), error});
 };

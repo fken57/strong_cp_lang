@@ -11,17 +11,22 @@ MAX_SOURCE_BYTES = 256 * 1024
 TIMEOUT_SECONDS = 2
 
 CATALOG = {
+    "char": (14, "char", "char", "1 バイトの文字型です。"),
+    "string": (14, "string = char[]", "string", "可変長の文字列型です。"),
+    "read_char": (3, "read_char() -> char", "read_char()", "空白を飛ばして 1 バイト読みます。"),
+    "read_string": (3, "read_string() -> string", "read_string()", "空白区切りの文字列を読みます。"),
+    "auto": (14, "auto name = value;", "auto ", "初期値から型を推論します。auto [a, b] で構造体のフィールドを分解できます。"),
     "struct": (15, "struct Name { ... }", "struct ${1:Point} {\n    int ${2:x};\n}", "フィールドとメソッドを定義します。"),
     "graph": (14, "graph G(n);", "graph ${1:G}(${2:n});", "無向グラフを作成します。"),
     "digraph": (14, "digraph D(n);", "digraph ${1:D}(${2:n});", "有向グラフを作成します。"),
     "edge": (14, "edge", "edge", "辺の to、cost、id を持つ値です。"),
-    "cin": (14, "cin >> value;", "cin >> ${1:value};", "整数を読み込みます。"),
-    "cout": (14, "cout << value;", "cout << ${1:value};", "整数を出力します。"),
+    "cin": (14, "cin >> value;", "cin >> ${1:value};", "整数、文字、文字列を読み込みます。"),
+    "cout": (14, "cout << value;", "cout << ${1:value};", "整数、文字、文字列を出力します。"),
     "read_int": (3, "read_int() -> int", "read_int()", "空白区切りの整数を一つ読みます。64bit を超える値は自動昇格します。"),
     "read_vec": (3, "read_vec(n: int) -> int[]", "read_vec(${1:n})", "整数を n 個読み、配列にします。"),
     "array": (3, "array(n: int, value: int = 0) -> int[]", "array(${1:n})", "長さ n の整数配列を作ります。第2引数で初期値を指定できます。"),
     "len": (3, "len(a: int[]) -> int", "len(${1:a})", "配列の長さを返します。"),
-    "print": (3, "print(value) -> void", "print(${1:value});", "整数または配列を改行付きで出力します。"),
+    "print": (3, "print(value) -> void", "print(${1:value});", "値または配列を改行付きで出力します。"),
     "rep": (15, "rep(i, start, end)", "rep(${1:i}, ${2:0}, ${3:n}) {\n    $0\n}", "終点を含まない for の短縮形です。"),
     "for": (15, "for (init; condition; step)", "for (int i = ${1:0}; i < ${2:n}; i++) {\n    $0\n}", "初期化・条件・更新を指定するループです。各節を省略できます。"),
     "fn": (15, "fn name() -> int", "fn ${1:name}() {\n    return ${2:0};\n}", "トップレベルに関数を定義します。型を省略すると int です。"),
@@ -48,12 +53,27 @@ VECTOR_METHODS = {
 }
 
 
+INT_VECTOR_METHODS = {
+    "sort": ("sort() -> void", "sort()", "整数を昇順に並べ替えます。"),
+    "at_least": ("at_least(x: int) -> int", "at_least(${1:x})", "x 以上の最初の添字。該当なしは size()。昇順配列用。"),
+    "more_than": ("more_than(x: int) -> int", "more_than(${1:x})", "x より大きい最初の添字。該当なしは size()。昇順配列用。"),
+    "at_most": ("at_most(x: int) -> int", "at_most(${1:x})", "x 以下の最後の添字。該当なしは -1。昇順配列用。"),
+    "less_than": ("less_than(x: int) -> int", "less_than(${1:x})", "x 未満の最後の添字。該当なしは -1。昇順配列用。"),
+    "run_length": ("run_length() -> pair<int,int>[]", "run_length()", "連続区間を (値, 個数) のペアに変換します。"),
+}
+
+
 def method_items(receiver_type):
     if not receiver_type.endswith("[]"):
         return {}
+    methods = VECTOR_METHODS
+    if receiver_type == "int[]":
+        methods = VECTOR_METHODS | INT_VECTOR_METHODS
+    elif receiver_type == "char[]":
+        methods = VECTOR_METHODS | {"push_back": ("push_back(c: char) -> void", "push_back(${1:c})", "末尾に文字を 1 バイト追加します。")}
     return {name: {"label": name, "kind": 2, "detail": detail.format(element=receiver_type[:-2]),
                    "insert": insert, "documentation": doc, "priority": "0"}
-            for name, (detail, insert, doc) in VECTOR_METHODS.items()}
+            for name, (detail, insert, doc) in methods.items()}
 
 
 def utf16_length(text):
@@ -147,11 +167,18 @@ class DocumentIndex:
                 close = self.pairs.get(i)
                 self.blocks.append((token["start"], tokens[close]["start"] if close is not None else eof))
         self.method_scopes = {}
-        self.members = {"graph": {}, "edge": {}}
+        self.members = {"graph": {}, "edge": {}, "pair<int,int>": {}}
+        for name in ("first", "second"):
+            self.members["pair<int,int>"][name] = self.member(name, 5, "int " + name, name, "int")
         for name, args in (("add", "u, v, cost = 1"), ("size", ""), ("edge_count", "")):
             insert = "add(${1:u}, ${2:v})" if name == "add" else name + "()"
             self.members["graph"][name] = self.member(name, 2, f"{name}({args}) -> int", insert, "int")
-        self.members["digraph"] = self.members["graph"]
+        self.members["digraph"] = self.members["graph"].copy()
+        self.members["graph"]["diameter"] = self.member(
+            "diameter", 5, "diameter → (dist, one, two)", "diameter", "<tree diameter>")
+        self.members["<tree diameter>"] = {
+            name: self.member(name, 5, "int " + name, name, "int") for name in ("dist", "one", "two")
+        }
         for name in ("to", "cost", "id"):
             self.members["edge"][name] = self.member(name, 5, "int " + name, name, "int")
         for i in range(len(tokens)-2):
@@ -167,13 +194,9 @@ class DocumentIndex:
                     detail = source[tokens[j]["start"]:tokens[close]["end"]]
                     k, result = close+1, "void"
                     if k+1 < limit and tokens[k]["kind"] == "TK_ARROW":
-                        result = tokens[k+1]["text"]
-                        k += 2
-                        while k+1 < limit and tokens[k]["text"] == "[" and tokens[k+1]["text"] == "]":
-                            result += "[]"
-                            k += 2
+                        result, k = self.read_type(k+1, limit)
                     args = [tokens[q]["text"] for q in range(j+3, close)
-                            if q == j+3 or tokens[q-1]["text"] == ","]
+                            if tokens[q]["kind"] == "TK_IDENT" and (q == j+3 or tokens[q-1]["text"] == ",")]
                     insert = name + "(" + ", ".join("${%d:%s}" % (n+1, arg) for n, arg in enumerate(args)) + ")"
                     members[name] = self.member(name, 2, detail + " -> " + result, insert, result)
                     if k < len(tokens) and tokens[k]["kind"] == "TK_LBRACE":
@@ -181,11 +204,7 @@ class DocumentIndex:
                     if k not in self.pairs: break
                     j = self.pairs[k]+1
                 else:
-                    result = tokens[j]["text"]
-                    j += 1
-                    while j+1 < limit and tokens[j]["text"] == "[" and tokens[j+1]["text"] == "]":
-                        result += "[]"
-                        j += 2
+                    result, j = self.read_type(j, limit)
                     if j >= limit or tokens[j]["kind"] != "TK_IDENT": break
                     name = tokens[j]["text"]
                     members[name] = self.member(name, 5, result + " " + name, name, result)
@@ -213,11 +232,7 @@ class DocumentIndex:
                         param["ref"] = True
                         j += 1
                     if j < close:
-                        param["type"] = tokens[j]["text"]
-                        j += 1
-                        while j + 1 < close and tokens[j]["kind"] == "TK_LBRACKET" and tokens[j + 1]["kind"] == "TK_RBRACKET":
-                            param["type"] += "[]"
-                            j += 2
+                        param["type"], j = self.read_type(j, close)
                 params.append(param)
                 if j >= close or tokens[j]["kind"] != "TK_COMMA":
                     break
@@ -226,11 +241,7 @@ class DocumentIndex:
             if j < len(tokens) and tokens[j]["kind"] == "TK_ARROW":
                 j += 1
                 if j < len(tokens):
-                    return_type = tokens[j]["text"]
-                    j += 1
-                    while j + 1 < len(tokens) and tokens[j]["kind"] == "TK_LBRACKET" and tokens[j + 1]["kind"] == "TK_RBRACKET":
-                        return_type += "[]"
-                        j += 2
+                    return_type, j = self.read_type(j, len(tokens))
             body = None
             if j < len(tokens) and tokens[j]["kind"] == "TK_LBRACE":
                 closed = self.pairs.get(j)
@@ -270,13 +281,28 @@ class DocumentIndex:
                                        "visible": start, "scope": start, "owner": self.owner(token["start"])})
         self.loop_ranges = [(tokens[close]["end"], end) for _, close, end in loops]
         for i, token in enumerate(tokens):
-            if token["kind"] not in ("TK_LET", "TK_INT") and token["text"] not in self.members:
+            if token["kind"] not in ("TK_LET", "TK_AUTO", "TK_INT") and token["text"] not in self.members and token["text"] not in ("pair", "char", "string"):
                 continue
-            j, declared_type = i + 1, token["text"]
-            if token["kind"] != "TK_LET":
-                while j + 1 < len(tokens) and tokens[j]["kind"] == "TK_LBRACKET" and tokens[j + 1]["kind"] == "TK_RBRACKET":
-                    declared_type += "[]"
-                    j += 2
+            if token["kind"] == "TK_AUTO" and i + 1 in self.pairs and tokens[i+1]["kind"] == "TK_LBRACKET":
+                close = self.pairs[i+1]
+                if close + 2 >= len(tokens) or tokens[close+1]["kind"] != "TK_ASSIGN":
+                    continue
+                end = next((j for j in range(close+2, len(tokens)) if tokens[j]["kind"] == "TK_SEMICOLON"), None)
+                if end is None:
+                    continue
+                value_type = self.infer_type(close+2, end, token["start"])
+                fields = [f for f in self.members.get(value_type, {}).values() if f["kind"] == 5]
+                scope = max((b for b in self.blocks if b[0] <= token["start"] <= b[1]), key=lambda b: (b[0], -b[1]))
+                for opened, loop_close, loop_end in loops:
+                    if opened < i < loop_close:
+                        scope = (tokens[opened]["start"], loop_end)
+                for j, field in zip(range(i+2, close, 2), fields):
+                    if tokens[j]["kind"] == "TK_IDENT":
+                        self.variables.append({"name": tokens[j]["text"], "type": field["result"],
+                                               "start": scope[0], "end": scope[1], "visible": tokens[end]["end"],
+                                               "owner": self.owner(token["start"]), "scope": scope[0]})
+                continue
+            declared_type, j = self.read_type(i, len(tokens))
             if j >= len(tokens) or tokens[j]["kind"] != "TK_IDENT":
                 continue
             name, value_start = tokens[j]["text"], j + 1
@@ -297,7 +323,7 @@ class DocumentIndex:
                 continue
             semicolon = tokens[semi_index]
             owner = self.owner(token["start"])
-            if token["kind"] != "TK_LET":
+            if token["kind"] not in ("TK_LET", "TK_AUTO"):
                 value_type = declared_type
             elif value_start < semi_index and tokens[value_start]["kind"] == "TK_ASSIGN":
                 value_type = self.infer_type(value_start + 1, semi_index, token["start"])
@@ -306,6 +332,20 @@ class DocumentIndex:
             if value_type != "void":
                 self.variables.append({"name": name, "type": value_type, "start": scope[0], "end": scope[1],
                                        "visible": semicolon["end"], "owner": owner, "scope": scope[0]})
+
+    def read_type(self, start, end):
+        tokens = self.tokens
+        name = tokens[start]["text"]
+        if name == "string": name = "char[]"
+        pos = start + 1
+        if name == "pair" and pos + 5 <= end:
+            if [token["text"] for token in tokens[pos:pos+5]] == ["<", "int", ",", "int", ">"]:
+                name = "pair<int,int>"
+                pos += 5
+        while pos + 1 < end and tokens[pos]["kind"] == "TK_LBRACKET" and tokens[pos+1]["kind"] == "TK_RBRACKET":
+            name += "[]"
+            pos += 2
+        return name, pos
 
     @staticmethod
     def member(name, kind, detail, insert, result):
@@ -342,19 +382,25 @@ class DocumentIndex:
             return "int"
         value, pos = tokens[begin], begin + 1
         result = "int"
-        if value["kind"] == "TK_LBRACKET":
+        if value["kind"] == "TK_CHAR":
+            result = "char"
+        elif value["kind"] == "TK_STRING":
+            result = "char[]"
+        elif value["kind"] == "TK_LBRACKET":
             close = self.pairs.get(begin)
             if close is None or close >= end:
                 return "int[]"
-            rank, start, j = 0, begin + 1, begin + 1
+            element, start, j = "int", begin + 1, begin + 1
             while j <= close:
                 if j == close or tokens[j]["kind"] == "TK_COMMA":
-                    rank = max(rank, self.infer_type(start, j, offset).count("[]"))
+                    current = self.infer_type(start, j, offset)
+                    if start < j and current.count("[]") >= element.count("[]"):
+                        element = current
                     start = j + 1
                 elif tokens[j]["kind"] in ("TK_LPAREN", "TK_LBRACKET"):
                     j = self.pairs.get(j, j)
                 j += 1
-            result, pos = "int" + "[]" * (rank + 1), close + 1
+            result, pos = element + "[]", close + 1
         elif value["kind"] == "TK_LPAREN" and begin in self.pairs:
             close = self.pairs[begin]
             result, pos = self.infer_type(begin + 1, close, offset), close + 1
@@ -362,9 +408,13 @@ class DocumentIndex:
             if pos < end and tokens[pos]["kind"] == "TK_LPAREN" and pos in self.pairs:
                 if value["text"] in ("array", "read_vec"):
                     result = "int[]"
+                elif value["text"] in ("read_char", "read_string"):
+                    result = "char" if value["text"] == "read_char" else "char[]"
                 else:
                     result = next((f["return"] for f in self.functions if f["name"] == value["text"]), "int")
                 pos = self.pairs[pos] + 1
+            elif pos in self.pairs and tokens[pos]["kind"] == "TK_LBRACE" and value["text"] in self.members:
+                result, pos = value["text"], self.pairs[pos] + 1
             else:
                 result = self.visible(offset).get(value["text"], {}).get("type", "int")
         while pos < end:
@@ -378,6 +428,8 @@ class DocumentIndex:
                     result = self.members[result][method]["result"]
                 elif method in ("pop", "back"):
                     result = result[:-2] if result.endswith("[]") else "int"
+                elif result == "int[]" and method in INT_VECTOR_METHODS:
+                    result = INT_VECTOR_METHODS[method][0].split(" -> ")[1]
                 elif method == "size":
                     result = "int"
                 else:
@@ -466,7 +518,8 @@ class LanguageService:
     def completions(self, source, position, snippets=True):
         offset = offset_at(source, position)
         line_start = source.rfind("\n", 0, offset) + 1
-        if "//" in source[line_start:offset]:
+        quoted_or_comment = r""" "(?:\\.|[^"\\])*" | '(?:\\.|[^'\\])*' | // """
+        if any(m[0] == "//" for m in re.finditer(quoted_or_comment, source[line_start:offset], re.VERBOSE)):
             return {"isIncomplete": False, "items": []}
         start, end = offset, offset
         while start > line_start and re.match(r"[A-Za-z0-9_]", source[start - 1]):
@@ -486,7 +539,7 @@ class LanguageService:
                 continue
             items[name] = {"label": name, "kind": kind, "detail": detail, "insert": insert,
                            "documentation": doc, "priority": "3" if name == "let" else "2"}
-        for name in index.members.keys() - {"graph", "digraph", "edge"}:
+        for name in index.members.keys() - {"graph", "digraph", "edge", "pair<int,int>", "<tree diameter>"}:
             items[name] = {"label": name, "kind": 22, "detail": "struct " + name, "insert": name,
                            "documentation": "ユーザー定義構造体", "priority": "1"}
         for function in index.functions:
@@ -514,7 +567,64 @@ class LanguageService:
                 insert = plain_snippet(insert)
             item["textEdit"] = {"range": edit_range, "newText": insert}
             result.append(item)
+        expansion = self.binding_expansion(index, offset, line_start)
+        if expansion:
+            result.append(expansion)
         return {"isIncomplete": False, "items": sorted(result, key=lambda item: item["sortText"])}
+
+    def binding_expansion(self, index, offset, line_start):
+        tokens = index.tokens
+        last = next((i for i in range(len(tokens)-1, -1, -1)
+                     if line_start <= tokens[i]["start"] and tokens[i]["end"] == offset), None)
+        if last is None:
+            return None
+        end = last if tokens[last]["kind"] == "TK_SEMICOLON" else last + 1
+        following = tokens[last+1] if last + 1 < len(tokens) else None
+        if end > last and following and following["kind"] != "TK_SEMICOLON":
+            if "\n" not in index.source[offset:following["start"]]:
+                return None
+        # Skip paired expressions while looking for the start of this statement.
+        declaration = end - 1
+        while declaration >= 0 and tokens[declaration]["start"] >= line_start:
+            token = tokens[declaration]
+            if token["kind"] == "TK_AUTO":
+                break
+            if token["kind"] in ("TK_SEMICOLON", "TK_LBRACE"):
+                return None
+            declaration = index.reverse_pairs.get(declaration, declaration) - 1
+        else:
+            return None
+        if declaration + 3 >= end:
+            return None
+        keyword, variable, assign = tokens[declaration:declaration+3]
+        if variable["kind"] != "TK_IDENT" or assign["kind"] != "TK_ASSIGN":
+            return None
+        value_type = index.infer_type(declaration+3, end, keyword["start"])
+        names = [name for name, field in index.members.get(value_type, {}).items() if field["kind"] == 5]
+        if not names:
+            return None
+        used = set(index.visible(keyword["start"]))
+        prefix = "diameter" if value_type == "<tree diameter>" else variable["text"]
+        bindings = []
+        for name in names:
+            base = prefix + "_" + name if value_type == "<tree diameter>" or name in used else name
+            name = base
+            suffix = 2
+            while name in used:
+                name = f"{base}_{suffix}"
+                suffix += 1
+            used.add(name)
+            bindings.append(name)
+        pattern = "[" + ", ".join(bindings) + "]"
+        original = index.source[keyword["start"]:offset]
+        initializer = index.source[variable["end"]:offset]
+        if end > last and (not following or following["kind"] != "TK_SEMICOLON"):
+            initializer += ";"
+        return {"label": "分解して展開 " + pattern, "kind": 15, "detail": "構造体を分解する auto 宣言に置き換えます。",
+                "sortText": "!bindings", "filterText": original, "insertTextFormat": 1,
+                "textEdit": {"range": {"start": position_at(index.source, keyword["start"]),
+                                       "end": position_at(index.source, offset)},
+                             "newText": "auto " + pattern + initializer}}
 
     def hover(self, source, position):
         offset = offset_at(source, position)

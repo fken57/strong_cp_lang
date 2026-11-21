@@ -61,5 +61,21 @@ invalid = json.loads(request('/api/analyze', {'source': 'int[][] g; g.push(1);'}
 assert invalid['diagnostics']
 items = json.loads(request('/api/complete', {'source': 'int[][] g;\ng[0].', 'position': {'line': 1, 'character': 5}}))
 assert any(item['label'] == 'push' and 'value: int)' in item['detail'] for item in items['items'])
+release_source = """
+char[][] labels = ["cat", "dog"];
+labels[0].push_back('s');
+int[] a = [2, 1, 2];
+a.sort();
+pair<int,int>[] runs = a.run_length();
+auto [value, count] = runs[1];
+graph G(2);
+G.add(0, 1, 7);
+auto [dist, one, two] = G.diameter;
+print(labels[0]); print(a.more_than(1)); print(count + dist);
+"""
+compiled = json.loads(request('/api/compile', {'source': release_source}))
+assert not compiled['diagnostics'] and 'fken::push_back' in compiled['cpp'] and '.diameter(' in compiled['cpp']
+planned = json.loads(request('/api/plan', {'source': release_source}))
+assert not planned['diagnostics'] and planned['plan']['main']
 request('/api/compile', {'source': 'print(1);'}, expected=403, headers={'Origin': 'https://foreign.invalid'})
 print('PASS: container health, editor assets, examples, C++ conversion, diagnostics, method completion, same-origin checks.')

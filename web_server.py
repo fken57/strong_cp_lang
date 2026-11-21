@@ -123,7 +123,7 @@ def make_server(port=8765, service=None, host="127.0.0.1", allowed_hosts=None):
                 self.send_json(200, [{"id": key, "label": label, "source": (ROOT / filename).read_text()}
                                      for key, label, filename in EXAMPLES])
             elif path == "/api/health":
-                self.send_json(200, {"name": "fken_cpl", "version": "0.7.0", "status": "ready"})
+                self.send_json(200, {"name": "fken_cpl", "version": "0.8.0", "status": "ready"})
             elif path in ASSETS:
                 filename, content_type = ASSETS[path]
                 self.send_bytes(200, (ROOT / "web" / filename).read_bytes(), content_type)

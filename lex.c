@@ -54,17 +54,29 @@ TokenArray *lex(Source *source) {
                         i++; column++;
                     }
                     break;
-                case '\'':
-                    if (i < source->length && source->data[i] == '\\') {
-                        if (++i == source->length || (source->data[i] != 'n' && source->data[i] != 't'))
-                            error_at(&token, "expected a space, newline or tab separator");
-                    } else if (i == source->length || source->data[i] != ' ') {
-                        error_at(&token, "expected a space, newline or tab separator");
+                case '\'': case '"': {
+                    bool valid = true;
+                    size_t decoded = 0;
+                    while (i < source->length && source->data[i] != c) {
+                        unsigned char byte = source->data[i];
+                        if (byte < 32) break;
+                        ++i;
+                        if (byte == '\\') {
+                            if (i == source->length || (unsigned char)source->data[i] < 32) { valid = false; break; }
+                            if (!strchr("\\\\\"'ntr", source->data[i])) valid = false;
+                            ++i;
+                        }
+                        ++decoded;
                     }
-                    if (++i == source->length || source->data[i++] != '\'') error_at(&token, "expected closing quote");
+                    if (i < source->length && source->data[i] == c) ++i;
+                    else valid = false;
+                    if (c == '\'' && decoded != 1) valid = false;
+                    token.length = i - start;
+                    if (!valid && !lex_allow_invalid) error_at(&token, "invalid or unclosed character or string literal");
+                    token.type = valid ? (c == '\'' ? TK_CHAR : TK_STRING) : TK_INVALID;
                     column += i - start - 1;
-                    token.type = TK_CHAR;
                     break;
+                }
                 case '(': token.type = TK_LPAREN; break;
                 case ')': token.type = TK_RPAREN; break;
                 case '{': token.type = TK_LBRACE; break;
@@ -100,6 +112,7 @@ TokenArray *lex(Source *source) {
         token.length = i - start;
         if (token.type == TK_IDENT) {
             if (strcmp(token.text, "let") == 0) token.type = TK_LET;
+            else if (strcmp(token.text, "auto") == 0) token.type = TK_AUTO;
             else if (strcmp(token.text, "int") == 0) token.type = TK_INT;
             else if (strcmp(token.text, "break") == 0) token.type = TK_BREAK;
             else if (strcmp(token.text, "if") == 0) token.type = TK_IF;

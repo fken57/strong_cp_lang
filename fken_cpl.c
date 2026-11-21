@@ -8,7 +8,8 @@
 
 static void destroy_expr(Expr *expr) {
     if (!expr) return;
-    if (expr->type == EXPR_BINARY) {
+    if (expr->type == EXPR_TEXT) free(expr->data.text);
+    else if (expr->type == EXPR_BINARY) {
         destroy_expr(expr->data.binary.left);
         destroy_expr(expr->data.binary.right);
     } else if (expr->type == EXPR_UNARY) {

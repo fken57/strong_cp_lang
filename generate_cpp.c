@@ -7,12 +7,17 @@ static const char cpp_runtime[] =
 
 static const char *cpp_type(ValueType type) {
     if (type == VALUE_VOID) return "void";
+    if (type == VALUE_CHAR) return "char";
+    if (type == VALUE_STRING) return "std::string";
     if (type == VALUE_INT) return "fken::Int";
     if (type == VALUE_ARRAY) return "fken::Array";
     static char name[64];
     char element[40];
     switch (type_base(type)) {
+        case VALUE_CHAR: strcpy(element, "char"); break;
         case VALUE_INT: strcpy(element, "fken::Int"); break;
+        case VALUE_DIAMETER: strcpy(element, "fken::Diameter"); break;
+        case VALUE_PAIR: strcpy(element, "fken::IntPair"); break;
         case VALUE_EDGE: strcpy(element, "fken::Edge"); break;
         case VALUE_GRAPH: strcpy(element, "fken::Graph<false>"); break;
         case VALUE_DIGRAPH: strcpy(element, "fken::Graph<true>"); break;
@@ -41,7 +46,7 @@ static void cpp_path(const Expr *target, size_t count) {
     if (target->type == EXPR_VARIABLE) { cpp_variable(target); return; }
     if (target->type == EXPR_FIELD) {
         cpp_path(target->data.field.owner, count);
-        if (target->data.field.owner->value_type == VALUE_EDGE) printf(".%s", target->data.field.name);
+        if (target->data.field.owner->value_type == VALUE_EDGE || target->data.field.owner->value_type == VALUE_PAIR || target->data.field.owner->value_type == VALUE_DIAMETER) printf(".%s", target->data.field.name);
         else printf(".f%zu", target->data.field.index);
         return;
     }
@@ -114,6 +119,16 @@ static void cpp_method(const Expr *expr) {
 
 static void cpp_expr(const Expr *expr) {
     switch (expr->type) {
+        case EXPR_TEXT:
+            if (expr->value_type == VALUE_CHAR) {
+                printf("'\\%03o'", (unsigned char)expr->data.text[0]);
+            } else {
+                fputs("std::string(\"", stdout);
+                for (const unsigned char *p = (const unsigned char *)expr->data.text; *p; ++p)
+                    printf("\\%03o", *p);
+                fputs("\")", stdout);
+            }
+            break;
         case EXPR_NUMBER: {
             errno = 0;
             char *end;
@@ -148,11 +163,15 @@ static void cpp_expr(const Expr *expr) {
                 case TK_GE: op = ">="; break;
                 default: error_at(NULL, "unsupported binary operator");
             }
-            fputs("([&]() { fken::Int fken_left = ", stdout);
+            ValueType operand = expr->data.binary.left->value_type;
+            const char *type = operand == VALUE_CHAR ? "unsigned char" : cpp_type(operand);
+            printf("([&]() { %s fken_left = ", type);
             cpp_expr(expr->data.binary.left);
-            fputs("; fken::Int fken_right = ", stdout);
+            printf("; %s fken_right = ", type);
             cpp_expr(expr->data.binary.right);
-            printf("; return fken_left %s fken_right; }())", op);
+            if (operand != VALUE_INT && expr->value_type == VALUE_INT)
+                printf("; return fken::Int(fken_left %s fken_right); }())", op);
+            else printf("; return fken_left %s fken_right; }())", op);
             break;
         }
         case EXPR_CALL: {
@@ -199,7 +218,7 @@ static void cpp_expr(const Expr *expr) {
             fputs("return fken_record; }())", stdout); break;
         case EXPR_FIELD:
             putchar('('); cpp_expr(expr->data.field.owner); putchar(')');
-            if (expr->data.field.owner->value_type == VALUE_EDGE) printf(".%s", expr->data.field.name);
+            if (expr->data.field.owner->value_type == VALUE_EDGE || expr->data.field.owner->value_type == VALUE_PAIR || expr->data.field.owner->value_type == VALUE_DIAMETER) printf(".%s", expr->data.field.name);
             else printf(".f%zu", expr->data.field.index);
             break;
         case EXPR_CONSTRUCT:
@@ -290,15 +309,19 @@ static void cpp_statement(const Statement *stmt) {
             fputs(";\n", stdout);
             break;
         case STMT_WRITE:
-            if (stmt->data.write.value) {
-                fputs("std::cout << ", stdout); cpp_expr(stmt->data.write.value); fputs(";\n", stdout);
-            } else printf("std::cout.put(%d);\n", stmt->data.write.separator);
-            break;
-        case STMT_PRINT:
             fputs("std::cout << ", stdout);
+            cpp_expr(stmt->data.write.value);
+            fputs(";\n", stdout);
+            break;
+        case STMT_PRINT: {
+            bool vector = type_rank(stmt->data.print.expression->value_type) &&
+                          stmt->data.print.expression->value_type != VALUE_STRING;
+            fputs(vector ? "fken::operator<<(std::cout, " : "std::cout << ", stdout);
             cpp_expr(stmt->data.print.expression);
+            if (vector) putchar(')');
             fputs(" << '\\n';\n", stdout);
             break;
+        }
         case STMT_DECLARATIONS:
             for (size_t i = 0; i < stmt->data.block.count; ++i) cpp_statement(stmt->data.block.statements[i]);
             break;

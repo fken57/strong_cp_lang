@@ -57,12 +57,14 @@ const char *token_type_name(TokenType type) {
     switch (type) {
         case TK_INSERT: return "TK_INSERT";
         case TK_EXTRACT: return "TK_EXTRACT";
+        case TK_STRING: return "TK_STRING";
         case TK_CHAR: return "TK_CHAR";
         case TK_NUMBER: return "TK_NUMBER";
         case TK_IDENT:  return "TK_IDENT";
         case TK_INT: return "TK_INT";
         case TK_DOT: return "TK_DOT";
         case TK_BREAK: return "TK_BREAK";
+        case TK_AUTO: return "TK_AUTO";
         case TK_LET:    return "TK_LET";
         case TK_IF:     return "TK_IF";
         case TK_ELSE:   return "TK_ELSE";

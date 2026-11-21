@@ -5,6 +5,8 @@ static const struct {
     size_t min_args, max_args;
     ValueType argument, result;
 } builtins[] = {
+    {"read_string", 0, 0, VALUE_INT, VALUE_STRING},
+    {"read_char", 0, 0, VALUE_INT, VALUE_CHAR},
     {"read_int", 0, 0, VALUE_INT, VALUE_INT},
     {"read_vec", 1, 1, VALUE_INT, VALUE_ARRAY},
     {"array", 1, 2, VALUE_INT, VALUE_ARRAY},
@@ -47,20 +49,44 @@ static bool writable(const Expr *expr) {
     return expr->type == EXPR_VARIABLE;
 }
 
+static Record structure_fields(Program *program, ValueType type) {
+    static Field edge[] = {{"to", VALUE_INT}, {"cost", VALUE_INT}, {"id", VALUE_INT}};
+    static Field pair[] = {{"first", VALUE_INT}, {"second", VALUE_INT}};
+    if (type == VALUE_EDGE) return (Record){.fields = edge, .count = 3};
+    static Field diameter[] = {{"dist", VALUE_INT}, {"one", VALUE_INT}, {"two", VALUE_INT}};
+    if (type == VALUE_DIAMETER) return (Record){.fields = diameter, .count = 3};
+    if (type == VALUE_PAIR) return (Record){.fields = pair, .count = 2};
+    if (type >= VALUE_RECORD && !type_rank(type))
+        return program->records[(type - VALUE_RECORD) / TYPE_STRIDE];
+    return (Record){0};
+}
+
 static void analyze_expr_as(Expr *expr, SymbolTable *symbols, ValueType hint) {
     expr->value_type = VALUE_INT;
     switch (expr->type) {
         case EXPR_NUMBER: break;
+        case EXPR_TEXT:
+            expr->value_type = expr->token->type == TK_CHAR ? VALUE_CHAR : VALUE_STRING;
+            break;
         case EXPR_VARIABLE: {
             Symbol *symbol = find_symbol(symbols, expr->data.variable.var_name, expr->token);
             expr->data.variable.offset = symbol->offset;
             expr->value_type = symbol->value_type;
             break;
         }
-        case EXPR_BINARY:
-            expect_expr(expr->data.binary.left, symbols, VALUE_INT);
-            expect_expr(expr->data.binary.right, symbols, VALUE_INT);
+        case EXPR_BINARY: {
+            Expr *left = expr->data.binary.left;
+            analyze_expr(left, symbols);
+            ValueType type = left->value_type;
+            TokenType op = expr->data.binary.op;
+            bool compares = op == TK_EQ || op == TK_NE || op == TK_LT || op == TK_LE || op == TK_GT || op == TK_GE;
+            if (type != VALUE_INT && !((type == VALUE_STRING || type == VALUE_CHAR) && compares) &&
+                !(type == VALUE_STRING && op == TK_PLUS))
+                error_at(expr->token, "operator does not support this operand type");
+            expect_expr(expr->data.binary.right, symbols, type);
+            if (type == VALUE_STRING && op == TK_PLUS) expr->value_type = VALUE_STRING;
             break;
+        }
         case EXPR_UNARY:
             expect_expr(expr->data.unary.operand, symbols, VALUE_INT);
             break;
@@ -99,19 +125,28 @@ static void analyze_expr_as(Expr *expr, SymbolTable *symbols, ValueType hint) {
         }
         case EXPR_FIELD: {
             analyze_expr(expr->data.field.owner, symbols);
-            ValueType owner = expr->data.field.owner->value_type;
-            Field edge[] = {{"to", VALUE_INT}, {"cost", VALUE_INT}, {"id", VALUE_INT}};
-            Field *fields = edge;
-            size_t count = 3;
-            if (owner != VALUE_EDGE) {
-                if (owner < VALUE_RECORD || type_rank(owner)) error_at(expr->token, "field access requires a structure");
-                Record *r = &symbols->program->records[(owner - VALUE_RECORD) / TYPE_STRIDE];
-                fields = r->fields; count = r->count;
+            Expr *receiver = expr->data.field.owner;
+            ValueType owner = receiver->value_type;
+            if (expr->data.field.name && !strcmp(expr->data.field.name, "diameter") && owner == VALUE_GRAPH) {
+                expr->type = EXPR_CALL;
+                memset(&expr->data.call, 0, sizeof(expr->data.call));
+                expr->data.call.name = "diameter";
+                expr->data.call.receiver = receiver;
+                expr->value_type = VALUE_DIAMETER;
+                return;
             }
-            for (size_t i = 0; i < count; ++i) {
-                if (!strcmp(expr->data.field.name, fields[i].name)) {
+            Record record = structure_fields(symbols->program, owner);
+            if (!record.name && !record.fields) error_at(expr->token, "field access requires a structure");
+            if (!expr->data.field.name) {
+                const Field *field = &record.fields[expr->data.field.index];
+                expr->data.field.name = field->name;
+                expr->value_type = field->type;
+                return;
+            }
+            for (size_t i = 0; i < record.count; ++i) {
+                if (!strcmp(expr->data.field.name, record.fields[i].name)) {
                     expr->data.field.index = i;
-                    expr->value_type = fields[i].type;
+                    expr->value_type = record.fields[i].type;
                     return;
                 }
             }
@@ -148,6 +183,10 @@ static void analyze_expr_as(Expr *expr, SymbolTable *symbols, ValueType hint) {
                 if (graph_type(receiver->value_type)) {
                     const char *name = expr->data.call.name;
                     size_t n = expr->data.call.count;
+                    if (!strcmp(name, "diameter") && receiver->value_type == VALUE_GRAPH && n == 0) {
+                        expr->value_type = VALUE_DIAMETER;
+                        return;
+                    }
                     if (!strcmp(name, "add")) {
                         if (!writable(receiver) || n < 2 || n > 3)
                             error_at(expr->token, "graph.add requires a writable graph and 2 or 3 arguments");
@@ -163,7 +202,17 @@ static void analyze_expr_as(Expr *expr, SymbolTable *symbols, ValueType hint) {
                 size_t min_args = 0, max_args = 0;
                 ValueType result = VALUE_VOID;
                 bool mutates = true;
-                if (strcmp(name, "push") == 0) min_args = max_args = 1;
+                bool bound = !strcmp(name, "at_least") || !strcmp(name, "more_than") ||
+                             !strcmp(name, "at_most") || !strcmp(name, "less_than");
+                if (bound || !strcmp(name, "run_length") || !strcmp(name, "sort")) {
+                    if (receiver->value_type != VALUE_ARRAY)
+                        error_at(expr->token, "method '%s' requires int[]", name);
+                    if (bound) { min_args = max_args = 1; result = VALUE_INT; }
+                    if (!strcmp(name, "run_length")) result = VALUE_PAIR + 1;
+                    mutates = result == VALUE_VOID;
+                }
+                else if (!strcmp(name, "push_back") && receiver->value_type == VALUE_STRING) min_args = max_args = 1;
+                else if (strcmp(name, "push") == 0) min_args = max_args = 1;
                 else if (strcmp(name, "resize") == 0) { min_args = 1; max_args = 2; }
                 else if (strcmp(name, "pop") == 0) result = receiver->value_type - 1;
                 else if (strcmp(name, "back") == 0) { result = receiver->value_type - 1; mutates = false; }
@@ -254,6 +303,13 @@ static void analyze_statement(Statement *stmt, int *offset, SymbolTable *symbols
             if (stmt->data.let.explicit_type) expect_expr(stmt->data.let.value, symbols, stmt->data.let.declared_type);
             else analyze_expr(stmt->data.let.value, symbols);
             if (stmt->data.let.value->value_type == VALUE_VOID) error_at(stmt->token, "cannot store a void result");
+            if (stmt->data.let.binding_count) {
+                Record record = structure_fields(symbols->program, stmt->data.let.value->value_type);
+                if (!record.name && !record.fields)
+                    error_at(stmt->token, "structured binding requires a structure or pair");
+                if (stmt->data.let.binding_count != record.count)
+                    error_at(stmt->token, "structured binding requires %zu names", record.count);
+            }
             stmt->data.let.offset = declare_symbol(
                 symbols, offset, stmt->data.let.name, stmt->data.let.value->value_type,
                 stmt->token);
@@ -273,7 +329,13 @@ static void analyze_statement(Statement *stmt, int *offset, SymbolTable *symbols
             if (!writable(stmt->data.assign.target)) error_at(stmt->token, "graph adjacency is read-only");
             ValueType type = stmt->data.assign.target->value_type;
             TokenType op = stmt->data.assign.op;
-            if (op != TK_ASSIGN && type != VALUE_INT) {
+            if (stmt->data.assign.stream_input) {
+                Expr *read = stmt->data.assign.value;
+                if (type == VALUE_STRING) read->data.call.name = "read_string";
+                else if (type == VALUE_CHAR) read->data.call.name = "read_char";
+                else if (type != VALUE_INT) error_at(stmt->token, "cin requires an int, char or string destination");
+            }
+            if (op != TK_ASSIGN && type != VALUE_INT && !(op == TK_PLUS_ASSIGN && type == VALUE_STRING)) {
                 error_at(stmt->token, "updates require an integer target");
             }
             if (op != TK_INC && op != TK_DEC) {
@@ -296,13 +358,19 @@ static void analyze_statement(Statement *stmt, int *offset, SymbolTable *symbols
                 expect_expr(stmt->data.return_stmt.value, symbols, symbols->function->return_type);
             }
             break;
-        case STMT_WRITE:
-            if (stmt->data.write.value) expect_expr(stmt->data.write.value, symbols, VALUE_INT);
+        case STMT_WRITE: {
+            analyze_expr(stmt->data.write.value, symbols);
+            ValueType type = stmt->data.write.value->value_type;
+            if (type != VALUE_INT && type != VALUE_CHAR && type != VALUE_STRING)
+                error_at(stmt->token, "cout requires an int, char or string");
             break;
+        }
         case STMT_PRINT:
             analyze_expr(stmt->data.print.expression, symbols);
             if (stmt->data.print.expression->value_type == VALUE_VOID) error_at(stmt->token, "cannot print a void result");
-            if (type_base(stmt->data.print.expression->value_type) != VALUE_INT) error_at(stmt->token, "print requires integers or integer vectors");
+            if (type_base(stmt->data.print.expression->value_type) != VALUE_INT &&
+                type_base(stmt->data.print.expression->value_type) != VALUE_CHAR)
+                error_at(stmt->token, "print requires integers, text or arrays of those types");
             break;
         case STMT_DECLARATIONS:
             for (size_t i = 0; i < stmt->data.block.count; ++i) analyze_statement(stmt->data.block.statements[i], offset, symbols);
